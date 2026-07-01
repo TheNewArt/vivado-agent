@@ -314,7 +314,7 @@ class BugDatabase:
         ))
         p.append(BugPattern(
             r"\$fatal", "fatal_error",
-            "\$fatal called in simulation. Review the simulation condition that triggered the fatal.",
+            "$fatal called in simulation. Review the simulation condition that triggered the fatal.",
             "error", [],
         ))
         p.append(BugPattern(
@@ -339,7 +339,7 @@ class BugDatabase:
         ))
         p.append(BugPattern(
             r"\$finish\s+called", "finish_called",
-            "\$finish called in testbench. Normal simulation end.",
+            "$finish called in testbench. Normal simulation end.",
             "info", [],
         ))
         p.append(BugPattern(

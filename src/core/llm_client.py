@@ -3,9 +3,13 @@
 import json
 import os
 from dataclasses import dataclass, field
+from dotenv import load_dotenv
 from src.utils.logger import setup_logger
 
 logger = setup_logger("llm_client")
+
+# Ensure .env is loaded (idempotent)
+load_dotenv()
 
 
 @dataclass
