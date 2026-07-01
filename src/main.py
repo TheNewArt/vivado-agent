@@ -185,8 +185,14 @@ def _debug(config: Config, args):
         from src.tools.project_detector import ProjectDetector
         pf = ProjectDetector().detect(project_dir)
         if pf.rtl_files:
-            rtl_dir = str(Path(pf.rtl_files[0]).parent)
-            config.data.setdefault("project", {})["rtl_dir"] = rtl_dir
+            # Filter out temp files (glbl.v, xsim generated)
+            real_rtl = [f for f in pf.rtl_files
+                        if "glbl" not in f.name
+                        and "xsim" not in str(f)
+                        and "sim" not in str(f.parent)]
+            if real_rtl:
+                rtl_dir = str(Path(real_rtl[0]).parent)
+                config.data.setdefault("project", {})["rtl_dir"] = rtl_dir
 
     orchestrator = DebugOrchestrator(config)
     result = orchestrator.run_debug_cycle(args.log, args.wdb, args.top or "top", args.clock)

@@ -107,13 +107,18 @@ exit
         return self._run_tcl(tcl)
 
     def probe_signals(self, wdb_path: str | Path, max_depth: int = 2) -> list[str]:
-        """Probe xsim signal hierarchy up to max_depth levels.
+        """Probe xsim signal hierarchy by trying known patterns.
 
         Returns list of signal paths like /tb_buggy/u_dut/count.
-        Runs in <5s for typical designs.
+        Avoids /* wildcard that hangs on some designs.
         """
         wdb = Path(wdb_path).resolve()
         snap_name = wdb.stem
+
+        # Try common testbench naming patterns
+        tb_candidates = [f"tb_{snap_name.replace('_behav','')}",
+                         snap_name.replace("_behav", ""),
+                         "tb"]
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".tcl",
                                          delete=False, encoding="utf-8") as f:
@@ -121,21 +126,19 @@ exit
             f.write("run 1ns\n")
             f.write('set f [open "sigs.csv" w]\n')
             f.write('puts $f "name"\n')
-            # Get top-level objects
-            f.write('set top [get_objects -r /*]\n')
-            f.write('foreach t $top {\n')
-            f.write('    puts $f [get_property NAME $t]\n')
-            if max_depth >= 2:
-                f.write('    set l2 [get_objects -r [get_property NAME $t]/*]\n')
-                f.write('    foreach s2 $l2 {\n')
-                f.write('        puts $f [get_property NAME $s2]\n')
-                if max_depth >= 3:
-                    f.write('        set l3 [get_objects -r [get_property NAME $s2]/*]\n')
-                    f.write('        foreach s3 $l3 {\n')
-                    f.write('            puts $f [get_property NAME $s3]\n')
-                    f.write('        }\n')
+            # Try each TB candidate
+            for tb in tb_candidates:
+                # Remove testbench suffix noise
+                tb = tb.replace("tb_tb_", "tb_")
+                f.write(f'if {{![catch {{set objs [get_objects -r /{tb}/*]}}]}} {{\n')
+                f.write('    foreach o $objs {\n')
+                f.write('        puts $f [get_property NAME $o]\n')
+                f.write('        set sub [get_objects -r [get_property NAME $o]/*]\n')
+                f.write('        foreach s2 $sub {\n')
+                f.write('            puts $f [get_property NAME $s2]\n')
+                f.write('        }\n')
                 f.write('    }\n')
-            f.write('}\n')
+                f.write('}\n')
             f.write('close $f\n')
             f.write('puts "===DONE==="\n')
             tcl_path = f.name
@@ -144,7 +147,7 @@ exit
             xsim = self._find_xsim()
             proc = subprocess.run(
                 [xsim, snap_name, "--tclbatch", tcl_path.replace("\\", "/")],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=20,
                 cwd=str(wdb.parent), errors="replace",
             )
             csv_path = wdb.parent / "sigs.csv"
@@ -157,7 +160,10 @@ exit
                             signals.append(line)
                 csv_path.unlink()
             return signals
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        except subprocess.TimeoutExpired:
+            logger.warning("Signal probe timed out (20s) — using fallback patterns")
+            return []
+        except FileNotFoundError as e:
             logger.warning(f"Signal probe failed: {e}")
             return []
         finally:
@@ -202,7 +208,7 @@ exit
             tcl_path_tcl = tcl_path.replace("\\", "/")
             proc = subprocess.run(
                 [xsim, snap_name, "--tclbatch", tcl_path_tcl],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, timeout=20,
                 cwd=str(wdb.parent), errors="replace",
             )
             csv_path = wdb.parent / "sigs.csv"

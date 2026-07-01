@@ -98,6 +98,27 @@ class DebugOrchestrator:
                 except Exception as e:
                     logger.warning(f"Waveform analysis failed: {e}")
 
+            # 1c) If xsim failed (no X/Z detected), use static scanner on RTL
+            if not wave_errors and rtl_dir.exists():
+                try:
+                    from src.tools.static_scanner import StaticScanner
+                    scanner = StaticScanner()
+                    rtl_issues = scanner.scan_rtl(rtl_dir)
+                    for issue in rtl_issues:
+                        if issue.severity == "error":
+                            wave_errors.append({
+                                "category": issue.category,
+                                "severity": "error",
+                                "message": issue.description,
+                                "line_no": issue.line,
+                                "source_file": "",
+                                "timestamp_ns": 0,
+                            })
+                    if rtl_issues:
+                        logger.info(f"Static scan: {len(rtl_issues)} RTL issues found")
+                except Exception as e:
+                    logger.warning(f"RTL scan failed: {e}")
+
             errors = log_errors + wave_errors
             iter_data["log_analysis"] = log_analysis
             iter_data["wave_errors"] = wave_errors

@@ -44,16 +44,16 @@ class SynthChecker:
     # ── Verilator: millisecond-level lint ─────────────────────────────────
 
     def _verilator_available(self) -> bool:
-        """Check Verilator availability: native or WSL."""
+        """Check Verilator availability: native or WSL. Fast check only."""
         if shutil.which("verilator") is not None:
             return True
         if self.wsl_verilator:
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     ["wsl", "which", "verilator"],
-                    capture_output=True, timeout=5,
+                    capture_output=True, timeout=3,
                 )
-                return True
+                return proc.returncode == 0
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
         return False
@@ -94,7 +94,7 @@ class SynthChecker:
 
         try:
             proc = subprocess.run(
-                full_cmd, capture_output=True, text=True, timeout=30,
+                full_cmd, capture_output=True, text=True, timeout=10,
             )
             output = (proc.stdout or "") + (proc.stderr or "")
             errors, warnings = [], []
