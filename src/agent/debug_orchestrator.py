@@ -47,6 +47,8 @@ class DebugOrchestrator:
         self._consecutive_no_improvement = 0
         self._last_error_count = 0
         self._stall_threshold = 3  # max iterations without any change
+        self._last_fix_text = ""  # detect identical LLM responses
+        self._baseline_error_count = 0  # static scanner baseline
 
     def run_debug_cycle(
         self,
@@ -106,6 +108,8 @@ class DebugOrchestrator:
                     from src.tools.static_scanner import StaticScanner
                     scanner = StaticScanner()
                     rtl_issues = scanner.scan_rtl(rtl_dir)
+                    if iteration == 0:
+                        self._baseline_error_count = len([i for i in rtl_issues if i.severity == "error"])
                     for issue in rtl_issues:
                         if issue.severity == "error":
                             wave_errors.append({
@@ -228,6 +232,15 @@ class DebugOrchestrator:
                     iter_data["proposed_fix"] = fix
                     result["fixes_applied"] += 1
 
+                    # ── Decision: duplicate fix? ──
+                    fix_sig = fix.strip().replace(" ", "")[:200]
+                    if fix_sig == self._last_fix_text and iteration >= 2:
+                        iter_data["decisions"].append("DUPLICATE FIX — LLM produced same output, aborting")
+                        result["aborted"] = True
+                        result["abort_reason"] = "LLM returning identical fix each iteration"
+                        break
+                    self._last_fix_text = fix_sig
+
                     # Detect API failure and abort
                     if fix.startswith("# LLM"):
                         iter_data["decisions"].append("LLM API failed — aborting debug cycle")
@@ -245,18 +258,19 @@ class DebugOrchestrator:
                         )
 
                         if applied:
-                            sim_result = self._rerun_simulation(rtl_dir)
-                            iter_data["rerun_result"] = sim_result
-                            new_errors = self._count_sim_errors(sim_result)
+                            # Re-run static scanner to check if fix worked
+                            from src.tools.static_scanner import StaticScanner
+                            re_scan = StaticScanner().scan_rtl(rtl_dir)
+                            new_error_count = len([i for i in re_scan if i.severity == "error"])
+                            old_error_count = self._baseline_error_count or len(errors)
 
                             # ── Decision: did the fix help? ──
-                            old_count = len(errors)
-                            if new_errors < old_count:
-                                iter_data["decisions"].append(f"FIX HELD: errors {old_count} -> {new_errors}")
-                            elif new_errors == old_count:
-                                iter_data["decisions"].append(f"NEUTRAL: still {new_errors} errors")
+                            if new_error_count < old_error_count:
+                                iter_data["decisions"].append(f"FIX HELD: errors {old_error_count} -> {new_error_count}")
+                            elif new_error_count == old_error_count:
+                                iter_data["decisions"].append(f"NEUTRAL: still {new_error_count} errors")
                             else:
-                                iter_data["decisions"].append(f"REGRESSED: errors {old_count} -> {new_errors}")
+                                iter_data["decisions"].append(f"REGRESSED: errors {old_error_count} -> {new_error_count}")
                 else:
                     iter_data["decisions"].append("no RTL file found for error — cannot fix")
                     # If we can't fix, terminate to avoid infinite loop
