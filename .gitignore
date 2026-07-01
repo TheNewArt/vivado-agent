@@ -18,6 +18,10 @@ vivado_agent_sim*.tcl
 check_threads.tcl
 example/*.log
 example/counter_prj/
+example/agent_*.tcl
+example/run_full*.tcl
+example/test_*.tcl
+example/run.tcl
 
 .env
 .DS_Store

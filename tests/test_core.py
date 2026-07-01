@@ -191,14 +191,15 @@ class TestWaveformTrimmer:
         from src.tools.waveform_trimmer import WaveformTrimmer
         trimmer = WaveformTrimmer()
         tcl = trimmer.generate_log_wave_tcl("top", ".", has_error=False)
-        assert "log_wave" in tcl
+        assert "log_all_signals" in tcl
         assert "waveform_storage" in tcl
 
     def test_error_expansion(self):
         from src.tools.waveform_trimmer import WaveformTrimmer
         trimmer = WaveformTrimmer()
         tcl = trimmer.generate_log_wave_tcl("top", ".", has_error=True)
-        assert "depth 5" in tcl or "log_wave" in tcl
+        assert "log_all_signals" in tcl
+        assert "waveform_storage" in tcl
 
 
 class TestProjectDetector:

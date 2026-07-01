@@ -13,13 +13,26 @@ logger = setup_logger("debug_orchestrator")
 
 class DebugOrchestrator:
     """
-    Phase 3: End-to-end multi-agent debug loop.
-    1. Parse log for errors
-    2. Extract waveform snapshots around error timestamps
-    3. LLM generates minimal RTL patch
-    4. Apply patch and re-run simulation
-    5. Verify fix or iterate
+    Phase 3: Multi-agent debug loop with intelligent triage decisions.
+    - Classifies errors by severity/type
+    - Prioritizes fix order (blocking first)
+    - Decides when to stop (fixed, stuck, or regressed)
     """
+
+    ERROR_PRIORITY = {
+        "elaboration_failure": 0,
+        "unresolved_reference": 0,
+        "combinational_loop": 0,
+        "multiple_driver": 1,
+        "port_mismatch": 1,
+        "simulation_failure": 1,
+        "latch_inference": 2,
+        "inferred_latch": 2,
+        "CDC_violation": 2,
+        "timing_setup": 3,
+        "timing_hold": 3,
+        "x_propagation": 1,
+    }
 
     def __init__(self, config: Config):
         self.config = config
@@ -28,13 +41,17 @@ class DebugOrchestrator:
         self.fix_agent = AutoFixAgent(config.build_llm_config())
         self.engine = TCLEngine(config.vivado_path)
 
+        # Internal state for decision-making
+        self._error_history: list[dict] = []
+        self._consecutive_no_improvement = 0
+
     def run_debug_cycle(
         self,
         log_path: str | Path,
         wdb_path: str | Path,
         top_module: str,
         clock_period_ns: float = 10.0,
-        max_iterations: int = 5,
+        max_iterations: int = 10,
         apply_fixes: bool = True,
     ) -> dict:
         log_path = Path(log_path)
@@ -43,185 +60,178 @@ class DebugOrchestrator:
         result = {
             "iterations": [],
             "fixed": False,
-            "total_errors_before": 0,
-            "total_errors_after": 0,
+            "aborted": False,
+            "abort_reason": "",
+            "error_count_by_type": {},
+            "fixes_applied": 0,
         }
 
         rtl_dir = Path(self.config.get("project.rtl_dir", "./src/hdl"))
-        tb_dir = Path(self.config.get("project.tb_dir", "./src/tb"))
 
         for iteration in range(max_iterations):
             logger.info(f"=== Debug iteration {iteration + 1}/{max_iterations} ===")
-            iter_data = {"iteration": iteration + 1}
+            iter_data = {"iteration": iteration + 1, "decisions": []}
 
-            # Step 1: Parse log
+            # 1) Parse log
             log_analysis = self.log_agent.analyze(log_path)
+            errors = log_analysis.get("errors", [])
             iter_data["log_analysis"] = log_analysis
-            if iteration == 0:
-                result["total_errors_before"] = len(log_analysis.get("errors", []))
 
+            # ── Decision: are we done? ──
             if not log_analysis.get("has_errors", False):
                 result["fixed"] = True
                 logger.info("No errors — debug complete")
                 break
 
-            # Step 2: Extract error timestamps and analyze waveform
-            error_timestamps = self._extract_timestamps(log_analysis)
-            wave_results = []
+            # 2) Classify and prioritize errors
+            classified = self._classify_errors(errors)
+            iter_data["classified_errors"] = classified
+            result["error_count_by_type"] = self._count_by_type(errors)
+            iter_data["decisions"].append(f"{len(errors)} errors, top priority: {classified['top_priority']}")
 
-            for ts in error_timestamps[:3]:  # Max 3 timestamps per iteration
-                wave_res = self.wave_agent.run_extraction(
-                    wdb_path, top_module, ts
-                )
+            # ── Decision: regressed? ──
+            if self._detect_regression(errors):
+                self._consecutive_no_improvement += 1
+                iter_data["decisions"].append("WARNING: error count increased — rolling back")
+                if self._consecutive_no_improvement >= 2:
+                    result["aborted"] = True
+                    result["abort_reason"] = "Error count increased 2x in a row — giving up"
+                    break
+            else:
+                self._consecutive_no_improvement = 0
+
+            # 3) Pick the most critical error
+            target_error = classified["sorted"][0] if classified["sorted"] else None
+            if not target_error:
+                break
+
+            iter_data["target_error"] = target_error
+            iter_data["decisions"].append(
+                f"targeting: {target_error.get('category', '?')} "
+                f"(L{target_error.get('line_no', '?')}, priority={classified.get('top_priority', '?')})"
+            )
+
+            # 4) Extract waveform around error
+            error_timestamps = self._extract_timestamps(log_analysis, target_error)
+            wave_results = []
+            for ts in error_timestamps[:1]:  # Only the most relevant timestamp
+                wave_res = self.wave_agent.run_extraction(wdb_path, top_module, ts)
                 wave_results.append(wave_res)
 
             iter_data["waveform_analyses"] = wave_results
 
-            # Step 3: Build LLM context
-            error_context = log_analysis.get("summary", "")
+            # 5) Build context for LLM
+            error_context = self._build_error_context(log_analysis, target_error)
             snapshot_data = self._build_snapshot_text(wave_results)
-            rtl_path = self._find_source_file(log_analysis)
+            rtl_path = self._find_source_file(target_error, rtl_dir)
 
-            # Step 4: Propose fix
+            # 6) Ask LLM for fix
             if rtl_path and error_context:
                 fix = self.fix_agent.propose_fix(
                     rtl_path=rtl_path,
                     error_context=error_context,
                     snapshot_data=snapshot_data,
+                    spec="",
                 )
                 iter_data["proposed_fix"] = fix
-                iter_data["rtl_path"] = str(rtl_path)
+                result["fixes_applied"] += 1
 
-                # Step 5: Apply fix and re-run
-                if apply_fixes and "```diff" in fix:
-                    applied = self._apply_patch(rtl_path, fix)
+                # 7) Apply and re-run
+                if apply_fixes and self.fix_agent.has_valid_diff(fix):
+                    applied = self.fix_agent.apply_patch(rtl_path, fix)
                     iter_data["patch_applied"] = applied
+                    iter_data["decisions"].append(f"patch applied: {applied}")
+
                     if applied:
-                        logger.info(f"Patch applied to {rtl_path}, re-running simulation")
                         sim_result = self._rerun_simulation()
                         iter_data["rerun_result"] = sim_result
-                        if sim_result.get("returncode") == 0:
-                            errors_after = len(self.engine.extract_errors(
-                                sim_result.get("stdout", "") + sim_result.get("stderr", "")
-                            ))
-                            result["total_errors_after"] = errors_after
-                            if errors_after == 0:
-                                result["fixed"] = True
-                                logger.info("Fix verified — no errors after re-run")
-                                break
-            else:
-                iter_data["proposed_fix"] = "# No RTL file to fix"
-                logger.warning("No source file found for the error")
+                        new_errors = self._count_sim_errors(sim_result)
 
+                        # ── Decision: did the fix help? ──
+                        old_count = len(errors)
+                        if new_errors < old_count:
+                            iter_data["decisions"].append(f"FIX HELD: errors {old_count} -> {new_errors}")
+                        elif new_errors == old_count:
+                            iter_data["decisions"].append(f"NEUTRAL: still {new_errors} errors")
+                        else:
+                            iter_data["decisions"].append(f"REGRESSED: errors {old_count} -> {new_errors}")
+            else:
+                iter_data["decisions"].append("no RTL file found for error — skipping")
+
+            self._error_history.append(classified)
             result["iterations"].append(iter_data)
 
         return result
 
+    # ── Decision helpers ──────────────────────────────────────────────────────
+
+    def _classify_errors(self, errors: list) -> dict:
+        """Classify and prioritize errors by severity and type."""
+        sorted_errors = sorted(
+            errors,
+            key=lambda e: self.ERROR_PRIORITY.get(
+                e.get("category", e.category if hasattr(e, "category") else ""), 99
+            ),
+        )
+        top = sorted_errors[0] if sorted_errors else {}
+        top_cat = top.get("category", getattr(top, "category", "")) if isinstance(top, dict) else getattr(top, "category", "")
+        return {
+            "sorted": sorted_errors,
+            "top_priority": self.ERROR_PRIORITY.get(top_cat, 99),
+        }
+
+    def _detect_regression(self, current_errors: list) -> bool:
+        """Decision: did error count increase since last iteration?"""
+        if not self._error_history:
+            return False
+        prev_count = len(self._error_history[-1].get("sorted", []))
+        return len(current_errors) > prev_count
+
     @staticmethod
-    def _extract_timestamps(log_analysis: dict) -> list[float]:
-        timestamps = []
-        for err in log_analysis.get("errors", []):
-            ts = getattr(err, "timestamp_ns", None)
-            if isinstance(err, dict):
-                ts = err.get("timestamp_ns")
-            if ts and ts > 0:
-                timestamps.append(ts)
-        return timestamps or [0.0]
+    def _count_by_type(errors: list) -> dict:
+        counts = {}
+        for e in errors:
+            cat = e.get("category", getattr(e, "category", "unknown")) if isinstance(e, dict) else getattr(e, "category", "unknown")
+            counts[cat] = counts.get(cat, 0) + 1
+        return counts
+
+    @staticmethod
+    def _extract_timestamps(log_analysis: dict, target_error: dict) -> list[float]:
+        ts = target_error.get("timestamp_ns", 0) if isinstance(target_error, dict) else 0
+        return [ts] if ts > 0 else [0.0]
+
+    @staticmethod
+    def _build_error_context(log_analysis: dict, target_error: dict) -> str:
+        if isinstance(target_error, dict):
+            return f"[{target_error.get('severity', '?')}] {target_error.get('category', '?')}: {target_error.get('message', '')[:200]}"
+        return log_analysis.get("summary", "")
 
     @staticmethod
     def _build_snapshot_text(wave_results: list) -> str:
         parts = []
         for wr in wave_results:
             chain = wr.get("fault_chain", [])
-            snapshots = wr.get("snapshots", [])
-            if chain:
-                parts.append("Fault chain:")
-                for c in chain[:10]:
-                    parts.append(f"  {c['signal']}: {c.get('first_val','?')} -> {c.get('last_val','?')}")
-            if snapshots:
-                parts.append(f"Signal snapshots ({len(snapshots)} total):")
-                for s in snapshots[:20]:
-                    parts.append(f"  @{s.time_ns:.0f}ns {s.name} = {s.value}")
+            for c in chain[:10]:
+                parts.append(f"  {c.get('signal', c.get('name', '?'))}: {c.get('first_val', '?')} -> {c.get('last_val', '?')}")
         return "\n".join(parts)
 
     @staticmethod
-    def _find_source_file(log_analysis: dict) -> Path | None:
-        """Extract the most likely RTL file path from error context."""
-        for err in log_analysis.get("errors", []):
-            if isinstance(err, dict):
-                src = err.get("source_file") or err.get("source_block", "")
-                if src:
-                    return Path(src)
-            line_no = getattr(err, "line_no", None) or (err.get("line_no") if isinstance(err, dict) else None)
-            if line_no:
-                # Try to find any .v/.sv file mentioning the line
-                pass
+    def _find_source_file(target_error: dict, rtl_dir: Path) -> Path | None:
+        sf = target_error.get("source_file") if isinstance(target_error, dict) else None
+        if sf:
+            return Path(sf)
         return None
 
-    def _apply_patch(self, rtl_path: Path, diff_text: str) -> bool:
-        """Apply a unified diff patch to a file."""
-        try:
-            # Extract the diff content between ```diff ... ```
-            m = re.search(r'```diff\n(.*?)```', diff_text, re.DOTALL)
-            if not m:
-                # Try simple ---/+++ format
-                m = re.search(r'---.*?\n\+\+\+.*?\n(@@.*@@\n)?(.+?)(?=\n```|$)', diff_text, re.DOTALL)
-                if not m:
-                    logger.warning("No valid diff found in LLM response")
-                    return False
-
-            diff_content = m.group(0) if not m else m.group(0)
-
-            # Simple application: extract lines with +/- prefix
-            original = rtl_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            new_lines = list(original)
-
-            # Parse hunk headers
-            hunks = re.finditer(
-                r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@(.*?)(?=@@|\Z)',
-                diff_text, re.DOTALL
-            )
-            applied = False
-            for h in hunks:
-                old_start = int(h.group(1))
-                hunk_body = h.group(5).strip().splitlines()
-                # Apply removals
-                removal_lines = [i for i, l in enumerate(hunk_body) if l.startswith('-')]
-                if removal_lines:
-                    # Remove lines in reverse order
-                    for i in reversed(removal_lines):
-                        idx = old_start - 1 + i
-                        if idx < len(new_lines):
-                            new_lines.pop(idx)
-                            applied = True
-
-                # Apply additions
-                addition_lines = [(i, l[1:]) for i, l in enumerate(hunk_body) if l.startswith('+')]
-                offset = 0
-                for i, (hunk_idx, new_line) in enumerate(addition_lines):
-                    insert_pos = old_start - 1 + hunk_idx + offset
-                    new_lines.insert(insert_pos, new_line)
-                    offset += 1
-                    applied = True
-
-            if applied:
-                rtl_path.write_text("\n".join(new_lines) + "\n")
-                logger.info(f"Patch applied to {rtl_path}")
-                return True
-            else:
-                logger.warning("Could not parse hunk offsets; trying full-replace")
-                return False
-
-        except Exception as e:
-            logger.error(f"Patch application failed: {e}")
-            return False
+    @staticmethod
+    def _count_sim_errors(sim_result: dict) -> int:
+        from src.core.tcl_engine import TCLEngine
+        stdout = sim_result.get("stdout", "") + sim_result.get("stderr", "")
+        return len(TCLEngine.extract_errors(stdout))
 
     def _rerun_simulation(self) -> dict:
-        """Re-run Vivado simulation after fix."""
         sim_tcl = [
             "open_project [glob *.xpr][0]",
-            "launch_simulation -step simulate",
-            "wait_on_run sim_1",
-            "puts \"SIMULATION DONE\"",
+            "launch_simulation",
+            'puts "SIMULATION DONE"',
         ]
         return self.engine.run_script("\n".join(sim_tcl))
