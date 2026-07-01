@@ -69,19 +69,19 @@ class AutoFixAgent:
         return False
 
     def syntax_check(self, rtl_path: Path) -> dict:
-        """Run xvlog syntax check on the file. Returns {passed, errors}."""
-        try:
-            proc = subprocess.run(
-                [self.vivado_path, "-mode", "batch", "-source", "-"],
-                input=f"read_vhdl -quiet {{{rtl_path}}}\n" if rtl_path.suffix == ".vhd"
-                      else f"read_verilog -quiet {{{rtl_path}}}\n",
-                capture_output=True, text=True, timeout=60,
-            )
-            output = proc.stdout + proc.stderr
-            has_error = "ERROR" in output or "Error" in output
-            return {"passed": not has_error, "errors": output[:500] if has_error else ""}
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return {"passed": True, "errors": "syntax check skipped (Vivado not available)"}
+        """Run syntax check: Verilator (ms) → Vivado fallback (s).
+
+        Returns {passed, errors, checker}.
+        """
+        from src.tools.synth_checker import SynthChecker
+        checker = SynthChecker(vivado_path=self.vivado_path)
+        top_module = rtl_path.stem  # guess top from filename
+        result = checker.quick_check(rtl_path, top_module=top_module)
+        return {
+            "passed": result.passed,
+            "errors": "; ".join(result.errors[:5]) if result.errors else "",
+            "checker": result.checker,
+        }
 
     # ── Apply patch with validation ──
     def apply_patch(self, rtl_path: Path, fix_text: str) -> bool:
