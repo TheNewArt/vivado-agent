@@ -204,29 +204,32 @@ class AutoFixAgent:
     @staticmethod
     def _build_prompt(rtl_path: str, rtl_code: str, error_context: str,
                       snapshot: str, spec: str, strategy: str) -> str:
-        fmt = 'Output JSON: {"category": "...", "root_cause": "...", "code": "..."}' \
+        fmt = 'Output the COMPLETE fixed file inside a code block:\n```verilog\n<complete fixed file>\n```\nDo NOT output a diff. Output the ENTIRE file.' \
             if strategy == "json" else \
-            'Output diff:\n```diff\n--- a/path\n+++ b/path\n@@ -... +... @@\n<diff>\n```'
-        return f"""Fix the RTL bug.
+            'Output the COMPLETE fixed file inside a code block:\n```verilog\n<complete fixed file>\n```\nDo NOT output a diff. Output the ENTIRE file.'
+        return f"""Fix ALL errors in the Verilog file below. Output the COMPLETE fixed file.
 
 ## File
 `{rtl_path}`
 
-## Current Code
+## Current Code (with error markers)
 ```verilog
-{rtl_code}
+{spec if spec else rtl_code}
 ```
 
-## Error
+## All Errors to Fix
 {error_context or "No details"}
 
 ## Waveform
 {snapshot or "Not available"}
 
-## Expected Behavior
-{spec or "Infer from context"}
+## Requirements
+1. Fix ALL errors listed above. Do NOT skip any.
+2. Output the COMPLETE fixed file, not just the changes.
+3. Keep the same module interface (ports, parameters).
+4. Ensure the code is synthesizable.
 
 ## Output Format
-{fmt}
-
-ONLY the fix. No explanation."""
+```verilog
+<complete fixed file>
+```"""

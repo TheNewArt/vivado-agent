@@ -190,17 +190,40 @@ class DebugOrchestrator:
                 if not rtl_path:
                     rtl_path = self._find_source_file(target_error, rtl_dir)
                 if not rtl_path and rtl_dir.exists():
-                    # Pick first RTL file as best guess
                     files = list(rtl_dir.rglob("*.v")) + list(rtl_dir.rglob("*.sv"))
+                    # Prefer "buggy" file if errors are from static scanner
+                    buggy_files = [f for f in files if "buggy" in f.name.lower()]
+                    files = buggy_files or files
                     if files:
                         rtl_path = files[0]
 
                 if rtl_path and rtl_path.exists():
+                    # Build comprehensive context with ALL errors and line numbers
+                    all_errors_text = error_context
+                    if "wave_errors" in iter_data:
+                        for we in iter_data.get("wave_errors", []):
+                            if isinstance(we, dict):
+                                cat = we.get("category", "?")
+                                msg = we.get("message", "")[:120]
+                                ln = we.get("line_no", "?")
+                                all_errors_text += f"\n  [{cat}] L{ln}: {msg}"
+
+                    # Read source code and annotate error lines
+                    rtl_code = rtl_path.read_text(encoding="utf-8", errors="replace")
+                    code_lines = rtl_code.splitlines()
+                    annotated = []
+                    for i, line in enumerate(code_lines, 1):
+                        marker = "  ← ERROR" if any(
+                            e.get("line_no") == i for e in errors if isinstance(e, dict)
+                        ) else ""
+                        annotated.append(f"L{i:4d}: {line}{marker}")
+                    annotated_code = "\n".join(annotated)
+
                     fix = self.fix_agent.propose_fix(
                         rtl_path=rtl_path,
-                        error_context=error_context,
+                        error_context=all_errors_text,
                         snapshot_data=snapshot_data,
-                        spec="",
+                        spec=f"## Code with error markers\n```verilog\n{annotated_code}\n```",
                     )
                     iter_data["proposed_fix"] = fix
                     result["fixes_applied"] += 1
