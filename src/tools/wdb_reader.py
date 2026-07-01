@@ -114,34 +114,21 @@ exit
         Instead, we use xsim.exe directly with a TCL script that reads values
         via get_value after running the simulation.
 
-        If signals is ['*'] or ['/*'], auto-discovers all signals via get_objects.
+        signals: list of full hierarchical paths like /tb_buggy/u_dut/count
         """
         wdb = Path(wdb_path).resolve()
         snap_name = wdb.stem
 
-        auto_discover = len(signals) == 1 and signals[0] in ("*", "/*")
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".tcl",
                                          delete=False, encoding="utf-8") as f:
             f.write("log_wave -r /\n")
-            if auto_discover:
-                f.write("run 1ns\n")
-                f.write('set f [open "sigs.csv" w]\n')
-                f.write('puts $f "time,signal,value"\n')
-                f.write('set sigs [get_objects -r /*]\n')
-                f.write('foreach s $sigs {\n')
-                f.write('    set name [get_property NAME $s]\n')
-                f.write('    set val [get_value $s]\n')
-                f.write('    puts $f "0,$name,$val"\n')
+            f.write(f"run {max(1, time_ns)}ns\n")
+            f.write('set f [open "sigs.csv" w]\n')
+            f.write('puts $f "time,signal,value"\n')
+            for sig in signals:
+                f.write(f'if {{![catch {{set val [get_value {{{sig}}}]}}]}} {{\n')
+                f.write(f'    puts $f "{time_ns},{sig},$val"\n')
                 f.write('}\n')
-            else:
-                f.write(f"run {max(1, time_ns)}ns\n")
-                f.write('set f [open "sigs.csv" w]\n')
-                f.write('puts $f "time,signal,value"\n')
-                for sig in signals:
-                    f.write(f'if {{![catch {{set val [get_value {{{sig}}}]}}]}} {{\n')
-                    f.write(f'    puts $f "{time_ns},{sig},$val"\n')
-                    f.write('}\n')
             f.write("close $f\n")
             f.write("puts \"===EXTRACT_DONE===\"\n")
             tcl_path = f.name

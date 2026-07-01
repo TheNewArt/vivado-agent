@@ -22,6 +22,10 @@ example/agent_*.tcl
 example/run_full*.tcl
 example/test_*.tcl
 example/run.tcl
+example/*prj/
+example/*.log
+example/*.wdb
+example/*.csv
 
 .env
 .DS_Store

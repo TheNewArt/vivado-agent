@@ -73,26 +73,20 @@ class WaveformAnalysisAgent:
         if not wdb_path.exists():
             return {"error": f"WDB not found: {wdb_path}"}
 
-        # Probe for actual signal names by listing xsim objects
-        from src.tools.wdb_reader import WDBReader
-        probe_signals = ["/*"]
-        probe = self.reader.extract_signal_values(wdb_path, probe_signals, error_time_ns)
+        # Direct signal path probing: try common patterns
+        tb_name = f"tb_{top_module}"
+        signals_to_try = []
+        for tb in [tb_name, f"TB_{top_module}", "tb"]:
+            for base in [f"/{tb}/u_dut", f"/{tb}"]:
+                for sig in ["clk", "rst_n", "count", "loop_sig", "multi_drive"]:
+                    signals_to_try.append(f"{base}/{sig}")
 
-        # If probe succeeded, use the discovered signals
-        if probe:
-            discovered_signals = [s.name for s in probe]
-        else:
-            # Fallback: try common naming patterns
-            tb_name = f"tb_{top_module}"
-            alt_tb = f"TB_{top_module}"
-            discovered_signals = []
-            # Try multiple possible TB names and signal patterns
-            for tb in [tb_name, alt_tb, "tb"]:
-                for base in [f"/{tb}/u_dut", f"/{tb}"]:
-                    for sig in ["clk", "rst_n", "count", "loop_sig", "multi_drive"]:
-                        discovered_signals.append(f"{base}/{sig}")
+        # Add module-level ports too
+        for tb in [tb_name, f"TB_{top_module}", "tb"]:
+            for sig in ["clk", "rst_n", "count"]:
+                signals_to_try.append(f"/{tb}/{sig}")
 
-        snapshots = self.reader.extract_signal_values(wdb_path, discovered_signals, error_time_ns)
+        snapshots = self.reader.extract_signal_values(wdb_path, signals_to_try, error_time_ns)
         xz_signals = {s.name for s in snapshots if 'x' in s.value.lower() or 'z' in s.value.lower()}
 
         # Build fault chain from X/Z signals
