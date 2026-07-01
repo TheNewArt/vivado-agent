@@ -8,7 +8,13 @@ logger = setup_logger("incremental_compile")
 
 
 class IncrementalCompileManager:
-    """Module-level incremental compilation with time prediction."""
+    """Dependency-aware incremental compilation cache.
+
+    Instead of flat file hashing, this tracks module-level hashes AND
+    their dependency relationships.  If module B changes, both B and any
+    module that instantiates B (transitive) will be marked as needing
+    recompilation.
+    """
 
     def __init__(self, cache_dir: str | Path = "./xsim_cache"):
         self.cache_dir = Path(cache_dir)
@@ -21,8 +27,9 @@ class IncrementalCompileManager:
         h.update(path.read_bytes())
         return h.hexdigest()
 
-    def compute_module_hashes(self, module_to_files: dict[str, list[Path]]) -> dict[str, str]:
-        """Compute hash per module by concatenating all its source files."""
+    def compute_module_hashes(
+        self, module_to_files: dict[str, list[Path]]
+    ) -> dict[str, str]:
         result = {}
         for mod, files in module_to_files.items():
             h = hashlib.sha256()
@@ -35,9 +42,15 @@ class IncrementalCompileManager:
         return result
 
     def get_changed_modules(
-        self, module_to_files: dict[str, list[Path]]
+        self,
+        module_to_files: dict[str, list[Path]],
+        dependency_graph: dict | None = None,
     ) -> tuple[list[str], list[str], bool]:
-        """Return (changed_module_names, unchanged_module_names, is_first_run)."""
+        """Return (changed_module_names, unchanged_module_names, is_first_run).
+
+        When dependency_graph is provided, transitively affected modules
+        (those that depend on a changed module) are also marked as changed.
+        """
         manifest = self._load_manifest()
         current = self.compute_module_hashes(module_to_files)
 
@@ -46,24 +59,50 @@ class IncrementalCompileManager:
             self._save_manifest(current)
             return list(current.keys()), [], True
 
-        changed, unchanged = [], []
+        direct_changed = []
+        unchanged = []
         for mod, chash in current.items():
             cached = manifest.get(mod)
             if cached != chash:
-                changed.append(mod)
+                direct_changed.append(mod)
             else:
                 unchanged.append(mod)
 
-        if changed:
+        changed = set(direct_changed)
+
+        # Dependency-aware: if a module changed, anything that depends on it also changes
+        if dependency_graph and direct_changed:
+            from src.tools.dependency_graph import DependencyGraph
+            dg = dependency_graph if isinstance(dependency_graph, dict) else {}
+            transitive = set(direct_changed)
+            queue = list(direct_changed)
+            while queue:
+                mod = queue.pop(0)
+                node_data = dg.get(mod) if isinstance(dg, dict) else None
+                if node_data:
+                    for parent in getattr(node_data, 'instantiated_by', set()):
+                        if parent not in transitive:
+                            transitive.add(parent)
+                            queue.append(parent)
+            changed = transitive
+
+        changed_list = list(changed)
+        unchanged_list = [m for m in unchanged if m not in changed]
+
+        if changed_list:
             new_manifest = manifest.copy()
             new_manifest.update(current)
             self._save_manifest(new_manifest)
 
-        logger.info(f"Incremental: {len(changed)} changed, {len(unchanged)} cached modules")
-        return changed, unchanged, False
+        logger.info(
+            f"Incremental: {len(direct_changed)} direct + "
+            f"{len(changed_list) - len(direct_changed)} transitive = "
+            f"{len(changed_list)} total changed, {len(unchanged_list)} cached"
+        )
+        return changed_list, unchanged_list, False
 
     def get_changed_files(self, files: list[Path]) -> tuple[list[Path], list[Path], bool]:
-        """Legacy flat-file check. Still works."""
+        """Legacy flat-file check (no dependency awareness)."""
         manifest = self._load_manifest()
         if not manifest:
             self._save_manifest({str(f): self._file_hash(f) for f in files})
@@ -86,34 +125,30 @@ class IncrementalCompileManager:
 
         return changed, unchanged, False
 
-    def record_compile(self, modules: list[str], duration_s: float, file_count: int, total_lines: int):
-        """Record a compile event for time prediction."""
+    def record_compile(self, modules: list[str], duration_s: float,
+                       file_count: int, total_lines: int):
         history = self._load_history()
         entry = {
             "timestamp": time.time(),
             "modules": modules,
-            "duration_s": duration_s,
+            "duration_s": round(duration_s, 1),
             "file_count": file_count,
             "total_lines": total_lines,
         }
         history.append(entry)
-        # Keep last 20 entries
         history = history[-20:]
         with open(self.history_path, "w") as f:
             json.dump(history, f, indent=2)
 
     def predict_compile_time(self, changed_modules: list[str]) -> dict:
-        """Predict compile time based on history and module count."""
         history = self._load_history()
         if not history:
-            return {"predicted_s": None, "confidence": "none", "detail": "No history available"}
-
-        # Average duration per module from recent runs
+            return {"predicted_s": None, "confidence": "none",
+                    "detail": "No history available"}
         total_dur = sum(e["duration_s"] for e in history)
         total_mods = sum(len(e["modules"]) for e in history)
-        avg_per_module = total_dur / max(total_mods, 1)
-
-        predicted = avg_per_module * len(changed_modules)
+        avg = total_dur / max(total_mods, 1)
+        predicted = avg * len(changed_modules)
         return {
             "predicted_s": round(predicted, 1),
             "predicted_min": round(predicted / 60, 1),
@@ -122,15 +157,12 @@ class IncrementalCompileManager:
         }
 
     def get_compile_deps_tcl(self, filesets: list[str], enable_incr: bool = False) -> str:
-        """Generate TCL for incremental compilation.
-        enable_incr: set True to enable --incr (Vivado 2019+). Safe to leave off on first run.
-        """
         tcl = ["# Incremental compilation setup"]
         tcl.append(f"set_property xsim.simulate.cache_path {{{self.cache_dir}}} [get_filesets sim_1]")
         if enable_incr:
             tcl.append("set_property xsim.simulate.xsim.more_options {--incr} [get_filesets sim_1]")
         else:
-            tcl.append("# set --incr after first successful compile for faster subsequent runs")
+            tcl.append("# set --incr after first successful compile")
         return "\n".join(tcl)
 
     def _load_manifest(self) -> dict:

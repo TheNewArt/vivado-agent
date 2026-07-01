@@ -9,6 +9,7 @@ from src.tools.static_scanner import StaticScanner
 from src.tools.runtime_monitor import SimulationMonitor
 from src.tools.module_parser import ModuleParser
 from src.tools.project_detector import ProjectDetector, ProjectFiles
+from src.tools.dependency_graph import DependencyGraph
 
 logger = setup_logger("simulation_optimizer")
 
@@ -150,8 +151,18 @@ class SimulationOptimizerAgent:
             for mod_name, info in mods.items():
                 module_to_files.setdefault(mod_name, []).append(f)
 
-        # 3) Incremental check
-        changed_mods, cached_mods, is_first = self.inc_compile.get_changed_modules(module_to_files)
+        # 3) Build dependency graph
+        dep_graph = DependencyGraph()
+        dep_nodes = dep_graph.build(module_to_files)
+        plan["dependency_graph"] = {
+            "node_count": len(dep_nodes),
+            "edge_count": sum(len(n.instantiated_modules) for n in dep_nodes.values()),
+        }
+
+        # 4) Incremental check (dependency-aware)
+        changed_mods, cached_mods, is_first = self.inc_compile.get_changed_modules(
+            module_to_files, dependency_graph=dep_nodes
+        )
         incr_decision = self._decide_incremental(changed_mods, cached_mods, list(module_to_files.keys()))
         plan["incremental"] = {
             "changed": changed_mods,

@@ -140,7 +140,10 @@ class DebugOrchestrator:
                 if apply_fixes and self.fix_agent.has_valid_diff(fix):
                     applied = self.fix_agent.apply_patch(rtl_path, fix)
                     iter_data["patch_applied"] = applied
-                    iter_data["decisions"].append(f"patch applied: {applied}")
+                    iter_data["decisions"].append(
+                        f"patch applied: {applied}" +
+                        (" (syntax check passed)" if applied else " (syntax check failed)")
+                    )
 
                     if applied:
                         sim_result = self._rerun_simulation()

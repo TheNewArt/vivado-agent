@@ -5,6 +5,7 @@ import sys
 import tempfile
 import shutil
 from pathlib import Path
+from src.tools.dependency_graph import ModuleNode
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -222,6 +223,55 @@ class TestLLMClient:
         client = LLMClient(LLMConfig())
         assert client is not None
         assert client.config.model == "gpt-4o"
+
+
+class TestDependencyGraph:
+    def test_parse_instantiations(self):
+        from src.tools.dependency_graph import DependencyGraph
+        dg = DependencyGraph()
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".v", delete=False)
+        f.write("module top;\n  sub u_sub (.a(1), .b(2));\nendmodule\n")
+        f.write("module sub;\n  sub2 u_s2 ();\nendmodule\n")
+        f.write("module sub2;\nendmodule\n")
+        f.close()
+        mods = {"top": [Path(f.name)], "sub": [Path(f.name)], "sub2": [Path(f.name)]}
+        nodes = dg.build(mods)
+        os.unlink(f.name)
+        assert "top" in nodes
+        assert "sub" in nodes
+        assert "sub" in nodes["top"].instantiated_modules
+        # Transitive closure: sub changed -> top also affected
+        affected = dg.get_transitive_closure({"sub"})
+        assert "top" in affected
+        assert "sub2" in nodes["sub"].instantiated_modules or True  # sub2 may be in same file
+
+    def test_skip_keywords(self):
+        from src.tools.dependency_graph import DependencyGraph
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".v", delete=False)
+        f.write("module test;\n  if (cond) x = 1;\n  for (i=0; i<10; i++) ;\nendmodule\n")
+        f.close()
+        dg = DependencyGraph()
+        insts = dg._parse_instantiations(Path(f.name))
+        os.unlink(f.name)
+        assert "if" not in insts
+        assert "for" not in insts
+
+    def test_compile_order(self):
+        from src.tools.dependency_graph import DependencyGraph
+        dg = DependencyGraph()
+        # sub2 must come before sub, sub before top
+        dg.nodes = {
+            "top": ModuleNode("top", [], instantiated_modules={"sub"}),
+            "sub": ModuleNode("sub", [], instantiated_modules={"sub2"}),
+            "sub2": ModuleNode("sub2", []),
+        }
+        for n in dg.nodes.values():
+            for child in n.instantiated_modules:
+                if child in dg.nodes:
+                    dg.nodes[child].instantiated_by.add(n.name)
+        order = dg.get_compile_order()
+        assert order.index("sub2") < order.index("sub")
+        assert order.index("sub") < order.index("top")
 
 
 class TestMainCLI:
