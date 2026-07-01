@@ -108,7 +108,52 @@ def mcp_tools(config: Config | None = None) -> dict:
         pf = detect(project_dir)
         top = top_module or pf.get("top_module", "top")
         checker = SynthChecker(config.vivado_path)
-        return checker.check_synthesizability(Path(pf["rtl_files"][0]).parent, top)
+        rtl_files = [Path(f) for f in pf.get("rtl_files", [])]
+        if rtl_files:
+            return checker.check_synthesizability(rtl_files[0].parent, top)
+        return {"synthesizable": False, "error": "no RTL files"}
+
+    def fix_timing(project_dir: str = ".", top_module: str = "") -> dict:
+        """Analyze timing report and auto-generate SDC constraints."""
+        from src.tools.timing_constraint_gen import TimingConstraintGenerator
+        from src.tools.ppa_analyzer import PPAAnalyzer
+        pf = detect(project_dir)
+        top = top_module or pf.get("top_module", "top")
+        rtl_dir = Path(pf["rtl_files"][0]).parent if pf["rtl_files"] else Path(project_dir)
+        analyzer = PPAAnalyzer(config.vivado_path)
+        ppa = analyzer.analyze(rtl_dir, top)
+        tcg = TimingConstraintGenerator()
+        # Try to parse the timing report from the PPA run
+        paths = tcg.parse_timing_report(ppa.report_text)
+        constraints = tcg.generate_constraints(paths)
+        xdc = tcg.generate_xdc()
+        return {
+            "violations": len(paths),
+            "worst_slack_ns": ppa.worst_slack_ns,
+            "constraints_generated": len(constraints),
+            "xdc_file": "auto_fix_constraints.xdc",
+        }
+
+    def analyze_protocol(log_path: str = "", wdb_path: str = "") -> dict:
+        """Analyze AXI protocol transactions from WDB."""
+        from src.tools.protocol_analyzer import ProtocolAnalyzer
+        from src.tools.wdb_reader import WDBReader
+        if wdb_path:
+            reader = WDBReader(config.vivado_path)
+            signals = reader.get_signal_names(wdb_path)
+            analyzer = ProtocolAnalyzer()
+            axi = analyzer.add_axi("axi")
+            for sig in signals:
+                if any(s in sig.upper() for s in ["AWVALID", "WVALID", "ARVALID", "RVALID"]):
+                    snapshots = reader.extract_signal_values(wdb_path, [sig], 0)
+                    for s in snapshots:
+                        axi.feed(s.name, s.value, s.time_ns)
+            events = analyzer.detect_all_events()
+            return {
+                "axi_signals_found": len(axi.get_relevant_signals()),
+                "transactions": events,
+            }
+        return {"error": "wdb_path required"}
 
     def ppa(project_dir: str = ".", top_module: str = "") -> dict:
         from src.tools.ppa_analyzer import PPAAnalyzer

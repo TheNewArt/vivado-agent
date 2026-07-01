@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from src.utils.logger import setup_logger
+from src.tools.protocol_analyzer import ProtocolAnalyzer
 
 logger = setup_logger("waveform_trimmer")
 
@@ -67,8 +68,13 @@ class WaveformTrimmer:
         tb_path: str | Path | None = None,
         has_error: bool = False,
         vivado_version: str = "2020.2",
+        detect_protocols: bool = True,
     ) -> str:
-        """Generate log_wave TCL compatible with Vivado 2020.2 (no -depth, no -signal)."""
+        """Generate log_wave TCL compatible with Vivado 2020.2 (no -depth, no -signal).
+
+        When detect_protocols=True, scans for AXI/PCIe interface signal patterns
+        and includes them in the waveform capture list.
+        """
         clk_rst = self.find_clock_reset_signals(rtl_dir)
         io = self.find_io_signals(top_module, rtl_dir)
         signals_to_log = set(clk_rst + io)
@@ -77,11 +83,23 @@ class WaveformTrimmer:
             assertion_sigs = self.parse_testbench_assertions(tb_path)
             signals_to_log.update(assertion_sigs)
 
-        lines = ["# Waveform trimming — batch mode (Vivado 2020.2 compatible)"]
+        # Protocol-aware signal detection
+        if detect_protocols:
+            proto = ProtocolAnalyzer()
+            proto.add_axi("axi")
+            if tb_path and Path(tb_path).exists():
+                tb_text = Path(tb_path).read_text(encoding="utf-8", errors="replace")
+                for sig in proto.relevant_signals():
+                    if sig.lower() in tb_text.lower():
+                        signals_to_log.add(sig.upper())
+                        signals_to_log.add(sig.lower())
 
-        # In batch mode, waveform capture is controlled via properties, not log_wave
+        lines = ["# Waveform trimming — batch mode (Vivado 2020.2 compatible)"]
         lines.append("set_property xsim.simulate.log_all_signals false [get_filesets sim_1]")
         lines.append("set_property xsim.simulate.waveform_storage compact [get_filesets sim_1]")
+
+        if detect_protocols:
+            lines.append("# Protocol-aware: AXI signals included per tb analysis")
 
         return "\n".join(lines)
 

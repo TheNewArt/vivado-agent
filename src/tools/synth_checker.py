@@ -25,28 +25,52 @@ class SynthResult:
 
 
 class SynthChecker:
-    """Synthesis checking with dual backend: Verilator (ms) + Vivado (s).
+    """Synthesis checking with triple backend: Verilator (ms) + WSL (ms) + Vivado (s).
 
-    Verilator is tried first for millisecond-level syntax + lint checking.
-    Falls back to Vivado xvlog/synth for deeper validation.
+    - Native Linux: Verilator directly
+    - Windows with WSL: `wsl verilator` for ms-level lint
+    - No Verilator: Vivado xvlog fallback (slower)
     """
 
     def __init__(self, vivado_path: str = "vivado",
                  verilator_path: str = "verilator",
+                 wsl_verilator: bool = True,
                  part: str = "xc7a35tcpg236-1"):
         self.vivado_path = vivado_path
         self.verilator_path = verilator_path
+        self.wsl_verilator = wsl_verilator
         self.part = part
 
     # ── Verilator: millisecond-level lint ─────────────────────────────────
 
-    @staticmethod
-    def _verilator_available() -> bool:
-        return shutil.which("verilator") is not None
+    def _verilator_available(self) -> bool:
+        """Check Verilator availability: native or WSL."""
+        if shutil.which("verilator") is not None:
+            return True
+        if self.wsl_verilator:
+            try:
+                subprocess.run(
+                    ["wsl", "which", "verilator"],
+                    capture_output=True, timeout=5,
+                )
+                return True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+        return False
+
+    def _verilator_cmd(self, cmd_args: list[str]) -> list[str]:
+        """Build verilator command (native or via wsl)."""
+        if shutil.which("verilator") is not None:
+            return [self.verilator_path] + cmd_args
+        if self.wsl_verilator:
+            return ["wsl", self.verilator_path] + cmd_args
+        return [self.verilator_path] + cmd_args  # will fail, caller handles
 
     def verilator_lint(self, rtl_path: Path, top_module: str = "",
                        include_dirs: list[Path] | None = None) -> SynthResult:
         """Run Verilator --lint-only. Returns in milliseconds.
+
+        Supports: native Linux, WSL on Windows, falls back gracefully.
 
         Catches: syntax errors, width mismatches, untyped signals,
         unused signals, blocking vs non-blocking misuse.
@@ -57,19 +81,20 @@ class SynthChecker:
 
         if not self._verilator_available():
             return SynthResult(passed=True, checker="skipped",
-                               errors=["Verilator not installed"])
+                               errors=["Verilator not installed (tried native and WSL)"])
 
-        cmd = [self.verilator_path, "--lint-only", "-Wall"]
+        cmd = ["--lint-only", "-Wall"]
         if top_module:
             cmd += ["--top-module", top_module]
         if include_dirs:
             for d in include_dirs:
                 cmd += ["-I", str(d)]
-        cmd += ["--cc", str(rtl_path.resolve())]  # --cc to suppress -o warning
+        cmd += ["--cc", str(rtl_path.resolve())]
+        full_cmd = self._verilator_cmd(cmd)
 
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30,
+                full_cmd, capture_output=True, text=True, timeout=30,
             )
             output = proc.stdout + proc.stderr
             errors, warnings = [], []
