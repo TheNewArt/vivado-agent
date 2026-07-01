@@ -7,6 +7,15 @@ from src.utils.logger import setup_logger
 logger = setup_logger("project_detector")
 
 
+DEVICE_FAMILIES = {
+    "7series":  ["xc7", "xa7", "xc7z"],
+    "ultrascale": ["xcku", "xcku", "xcku"],
+    "ultrascale_plus": ["xcku", "xcku", "xcku", "xcku", "xcku", "xcku", "xcku", "xcku", "xcku", "xcku"],
+    "versal":   ["xvc", "xvm", "xve"],
+    "aie":      ["aie"],
+}
+
+
 @dataclass
 class ProjectFiles:
     rtl_files: list[Path]
@@ -15,6 +24,12 @@ class ProjectFiles:
     top_module: str = ""
     project_name: str = ""
     source: str = ""  # xpr, filelist, scan
+    device: str = ""  # xc7a35t, xcku040, etc.
+    device_family: str = ""  # 7series, ultrascale, versal, aie
+    vivado_version: str = ""
+    has_petalinux: bool = False
+    has_vitis_hls: bool = False
+    has_hls_source: bool = False
 
 
 class ProjectDetector:
@@ -39,11 +54,51 @@ class ProjectDetector:
                 return self._from_filelist(fl)
 
         # 3) Fallback: directory scan
-        return self._from_scan(project_dir)
+        pf = self._from_scan(project_dir)
+        # 4) Detect PetaLinux / Vitis HLS / HLS sources
+        self._detect_extras(project_dir, pf)
+        return pf
+
+    @staticmethod
+    def _detect_extras(project_dir: Path, pf: ProjectFiles):
+        """Detect PetaLinux, Vitis HLS, and HLS sources."""
+        # PetaLinux: look for petalinux project markers
+        petalinux_markers = [
+            project_dir / "petalinux" / "config.project",
+            project_dir / "project-spec" / "config.project",
+            project_dir / "meta-user",
+        ]
+        pf.has_petalinux = any(m.exists() for m in petalinux_markers)
+
+        # Vitis HLS: look for .tcl with HLS directives
+        hls_scripts = list(project_dir.rglob("*.tcl"))
+        for tcl in hls_scripts:
+            if tcl.exists():
+                text = tcl.read_text(encoding="utf-8", errors="replace")
+                if "open_solution" in text or "csynth_design" in text:
+                    pf.has_vitis_hls = True
+                    break
+
+        # HLS source files (.cpp, .c with HLS pragmas)
+        for ext in ("*.cpp", "*.c"):
+            for f in project_dir.rglob(ext):
+                if f.exists():
+                    text = f.read_text(encoding="utf-8", errors="replace")
+                    if "HLS" in text or "hls" in text or "ap_int" in text or "ap_fixed" in text:
+                        pf.has_hls_source = True
+                        break
+
+        if pf.has_petalinux:
+            logger.info(f"  PetaLinux project detected")
+        if pf.has_vitis_hls:
+            logger.info(f"  Vitis HLS project detected")
+        if pf.has_hls_source:
+            logger.info(f"  HLS source files detected")
 
     def _from_xpr(self, xpr_path: Path) -> ProjectFiles:
-        """Parse Vivado .xpr XML to extract file lists."""
+        """Parse Vivado .xpr XML to extract file lists and metadata."""
         logger.info(f"Parsing XPR: {xpr_path}")
+        text = xpr_path.read_text(encoding="utf-8", errors="replace")
         try:
             tree = ET.parse(xpr_path)
             root = tree.getroot()
@@ -51,8 +106,6 @@ class ProjectDetector:
             logger.warning(f"Failed to parse XPR: {e}")
             return self._from_scan(xpr_path.parent)
 
-        ns = {"ns": "http://www.xilinx.com/XMLSchema"}
-        # Try without namespace
         files = []
         for file_elem in root.iter("File"):
             path_attr = file_elem.get("Path") or file_elem.get("path")
@@ -67,14 +120,51 @@ class ProjectDetector:
                         files.append(p)
 
         # Also search for file paths in text
-        text = xpr_path.read_text(encoding="utf-8")
         for m in re.finditer(r'<Path>([^<]+\.(?:v|sv|vhd|vhdl))</Path>', text, re.IGNORECASE):
             p = Path(m.group(1))
             if p.suffix.lower() in self.HDL_EXTS:
                 files.append(p)
 
         project_name = xpr_path.stem
-        return self._classify_files(files, project_dir=xpr_path.parent, source="xpr", project_name=project_name)
+
+        # Extract device part
+        device = ""
+        family = ""
+        m = re.search(r'<Part>\s*([^<]+)\s*</Part>', text)
+        if m:
+            device = m.group(1).strip()
+            # Determine family
+            device_lower = device.lower()
+            if any(device_lower.startswith(p) for p in ["xc7", "xa7", "xc7z"]):
+                family = "7series"
+            elif any(device_lower.startswith(p) for p in ["xcku", "xcku"]):
+                family = "ultrascale"
+            elif any(device_lower.startswith(p) for p in ["xcku", "xcku", "xcku",
+                                                           "xcku", "xcku", "xcku",
+                                                           "xcku", "xcku", "xcku"]):
+                family = "ultrascale_plus"
+            elif any(device_lower.startswith(p) for p in ["xvc", "xvm", "xve"]):
+                family = "versal"
+            elif "aie" in device_lower:
+                family = "aie"
+
+        # Extract Vivado version
+        vivado_version = ""
+        m = re.search(r'<ProductVersion>\s*([^<]+)\s*</ProductVersion>', text)
+        if m:
+            vivado_version = m.group(1).strip()
+        # Also try RV design version
+        if not vivado_version:
+            m = re.search(r'<!--\s*Product version:\s*([^<]+?)\s*-->', text)
+            if m:
+                vivado_version = m.group(1).strip()
+
+        pf = self._classify_files(files, project_dir=xpr_path.parent, source="xpr", project_name=project_name)
+        pf.device = device
+        pf.device_family = family
+        pf.vivado_version = vivado_version
+        self._detect_extras(xpr_path.parent, pf)
+        return pf
 
     def _from_filelist(self, filelist_path: Path) -> ProjectFiles:
         """Parse filelist (one file per line, supports comments)."""

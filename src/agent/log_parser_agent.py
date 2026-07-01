@@ -1,7 +1,8 @@
 from pathlib import Path
 from src.utils.logger import setup_logger
 from src.tools.log_analyzer import LogAnalyzer
-from src.tools.rag_index import RAGIndex, BugDatabase
+from src.tools.rag_index import RAGIndex
+from src.tools.bug_db import BugDatabase
 
 logger = setup_logger("log_parser_agent")
 

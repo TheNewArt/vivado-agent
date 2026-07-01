@@ -197,15 +197,23 @@ def _debug(config: Config, args):
 def _detect(config: Config, args):
     from src.tools.project_detector import ProjectDetector
     pf = ProjectDetector().detect(args.project_dir or Path.cwd())
-    print(f"Project : {pf.project_name}")
-    print(f"Source  : {pf.source}")
-    print(f"Top     : {pf.top_module or 'unknown'}")
-    print(f"RTL     : {len(pf.rtl_files)} files")
+    print(f"Project    : {pf.project_name}")
+    print(f"Source     : {pf.source}")
+    print(f"Device     : {pf.device or 'unknown'}")
+    print(f"Family     : {pf.device_family or 'unknown'}")
+    print(f"Vivado     : {pf.vivado_version or 'unknown'}")
+    print(f"Top        : {pf.top_module or 'unknown'}")
+    extras = []
+    if pf.has_petalinux: extras.append("PetaLinux")
+    if pf.has_vitis_hls: extras.append("VitisHLS")
+    if pf.has_hls_source: extras.append("HLS_C")
+    if extras: print(f"Extras     : {', '.join(extras)}")
+    print(f"RTL        : {len(pf.rtl_files)} files")
     for f in pf.rtl_files[:10]:
         print(f"  {f.relative_to(Path.cwd()) if f.is_relative_to(Path.cwd()) else f}")
     if len(pf.rtl_files) > 10:
         print(f"  ... +{len(pf.rtl_files)-10} more")
-    print(f"TB      : {len(pf.tb_files)} files")
+    print(f"TB         : {len(pf.tb_files)} files")
     for f in pf.tb_files[:5]:
         print(f"  {f.relative_to(Path.cwd()) if f.is_relative_to(Path.cwd()) else f}")
 
