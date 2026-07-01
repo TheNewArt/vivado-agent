@@ -1,17 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "vivado-agent"
 version = "0.1.0"
-description = "AI-driven Vivado FPGA development agent — simulation acceleration & auto-debug"
+description = "AI-driven FPGA simulation acceleration & auto-debug — Vivado Agent"
+readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Vivado Agent"}]
+
 dependencies = [
     "pyyaml>=6.0",
-    "watchdog>=3.0",
-    "pydantic>=2.0",
     "python-dotenv>=1.0",
 ]
 
 [project.scripts]
 vivado-agent = "src.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 
 [tool.ruff]
 line-length = 100
