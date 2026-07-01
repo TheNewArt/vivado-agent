@@ -22,11 +22,16 @@ class DependencyGraph:
     all modules that instantiate B must also be recompiled.
     """
 
-    # Match: module_name #(params) instance_name ( ports );
+    # Match: module_name [#(params)] instance_name ( ports );
     # Must NOT match: if (cond), for (i=0), always @(posedge)
+    # Parameter override with nested parens is handled by matching balanced parens
     INST_RE = re.compile(
         r'(?:^|\s)([a-zA-Z_]\w*)\s+'           # module name (capture)
-        r'(?:#\s*\([^)]*\)\s*)?'               # optional parameter override
+        r'(?:'                                  # optional parameter override start
+        r'#\s*\('                               # #(
+        r'(?:[^()]|\([^()]*\))*'               # balanced content (no nested nesting)
+        r'\)\s*'                                # closing )
+        r')?'                                    # parameter override end
         r'([a-zA-Z_]\w*)\s*'                    # instance name (capture)
         r'\(',                                  # start of port list
     )

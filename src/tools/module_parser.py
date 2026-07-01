@@ -38,13 +38,18 @@ class ModuleParser:
         modules = {}
         for m in self.MODULE_RE.finditer(text):
             name = m.group(1)
-            # Skip `module` keyword inside comments or string literals
-            prev_newline = text.rfind('\n', 0, m.start())
-            line_start = prev_newline + 1
-            line_prefix = text[line_start:m.start()].strip()
-            if "//" in line_prefix or "/*" in line_prefix or "//" in text[line_start:line_start+2]:
-                continue
-            if name.lower() in ('auto', 'generate', 'for', 'if', 'case'):
+            # Find the line that 'module' appears on; skip if comment line
+            # Use m.end() to find the \n before the module's line
+            line_begin = text.rfind('\n', 0, m.end())
+            if line_begin == -1:
+                line_begin = 0
+            else:
+                line_begin += 1
+            line_end = text.find('\n', line_begin)
+            if line_end == -1:
+                line_end = len(text)
+            entire_line = text[line_begin:line_end].strip()
+            if entire_line.startswith("//") or entire_line.startswith("/*"):
                 continue
             modules[name] = ModuleInfo(name=name, files=[path], lines=text.count('\n') + 1)
         return modules
