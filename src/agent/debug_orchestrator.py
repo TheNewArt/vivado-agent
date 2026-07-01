@@ -45,6 +45,8 @@ class DebugOrchestrator:
         # Internal state for decision-making
         self._error_history: list[dict] = []
         self._consecutive_no_improvement = 0
+        self._last_error_count = 0
+        self._stall_threshold = 3  # max iterations without any change
 
     def run_debug_cycle(
         self,
@@ -132,6 +134,15 @@ class DebugOrchestrator:
 
             logger.info(f"Found {len(log_errors)} log errors + {len(wave_errors)} waveform errors")
 
+            # ── Decision: stalled? ──
+            if len(errors) == self._last_error_count > 0 and iteration >= self._stall_threshold:
+                logger.warning(f"Error count unchanged for {iteration} iterations — aborting")
+                result["aborted"] = True
+                result["abort_reason"] = f"Stalled: {len(errors)} errors unchanged for {self._stall_threshold}+ iterations"
+                iter_data["decisions"].append("ABORT: no progress")
+                break
+            self._last_error_count = len(errors)
+
             # 2) Classify and prioritize errors
             classified = self._classify_errors(errors)
             iter_data["classified_errors"] = classified
@@ -211,7 +222,7 @@ class DebugOrchestrator:
                         )
 
                         if applied:
-                            sim_result = self._rerun_simulation()
+                            sim_result = self._rerun_simulation(rtl_dir)
                             iter_data["rerun_result"] = sim_result
                             new_errors = self._count_sim_errors(sim_result)
 
@@ -298,11 +309,20 @@ class DebugOrchestrator:
         sf = target_error.get("source_file") if isinstance(target_error, dict) else None
         if sf:
             return Path(sf)
-        # Fallback: search for the RTL file in the rtl_dir
+        # Fallback: search for the RTL file matching the top module name
+        cat = target_error.get("category", "") if isinstance(target_error, dict) else ""
         if rtl_dir and rtl_dir.exists():
+            # Try to find file containing the buggy module
             for ext in ("*.v", "*.sv"):
                 for f in rtl_dir.rglob(ext):
-                    return f  # return the first RTL file found
+                    if "buggy" in f.name.lower() or "bug" in f.name.lower():
+                        return f
+            # If no buggy file, try matching error category
+            for ext in ("*.v", "*.sv"):
+                for f in rtl_dir.rglob(ext):
+                    if "glbl" in f.name or "xsim" in str(f):
+                        continue
+                    return f
         return None
 
     @staticmethod
@@ -311,10 +331,18 @@ class DebugOrchestrator:
         stdout = sim_result.get("stdout", "") + sim_result.get("stderr", "")
         return len(TCLEngine.extract_errors(stdout))
 
-    def _rerun_simulation(self) -> dict:
-        sim_tcl = [
-            "open_project [glob *.xpr][0]",
-            "launch_simulation",
-            'puts "SIMULATION DONE"',
-        ]
-        return self.engine.run_script("\n".join(sim_tcl))
+    def _rerun_simulation(self, rtl_dir: Path | None = None) -> dict:
+        from pathlib import Path
+        search_dir = rtl_dir or Path.cwd()
+        xprs = list(search_dir.rglob("*.xpr"))
+        # Prefer buggy_prj over counter_prj
+        xprs.sort(key=lambda p: 0 if "buggy" in str(p).lower() else 1)
+        if not xprs:
+            return {"stdout": "", "stderr": "No project found", "returncode": -1, "elapsed": 0}
+        xpr_path = str(xprs[0].resolve()).replace("\\", "/")
+        sim_tcl = f"""
+open_project {{{xpr_path}}}
+launch_simulation
+puts "SIMULATION DONE"
+"""
+        return self.engine.run_script(sim_tcl)
