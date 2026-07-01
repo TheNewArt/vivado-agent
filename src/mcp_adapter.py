@@ -155,6 +155,26 @@ def mcp_tools(config: Config | None = None) -> dict:
             }
         return {"error": "wdb_path required"}
 
+    def timing_sim(project_dir: str = ".", top_module: str = "", tb_top: str = "") -> dict:
+        """Run post-synthesis timing simulation with SDF."""
+        from src.tools.post_synth_flow import PostSynthFlow
+        pf = detect(project_dir)
+        top = top_module or pf.get("top_module", "top")
+        rtl_dir = Path(pf["rtl_files"][0]).parent if pf["rtl_files"] else Path(project_dir)
+        tb_path = Path(pf["tb_files"][0]) if pf["tb_files"] else None
+        if not tb_path:
+            return {"error": "no testbench found"}
+        flow = PostSynthFlow()
+        result = flow.run_timing_sim(rtl_dir, tb_path, top, tb_top)
+        violations = flow.check_timing_violations(result.report_text)
+        return {
+            "rtl_passed": result.rtl_passed,
+            "gate_passed": result.gate_passed,
+            "timing_matched": result.timing_matched,
+            "setup_violations": violations["setup_violations"],
+            "hold_violations": violations["hold_violations"],
+        }
+
     def ppa(project_dir: str = ".", top_module: str = "") -> dict:
         from src.tools.ppa_analyzer import PPAAnalyzer
         pf = detect(project_dir)

@@ -120,6 +120,13 @@ python -m src.main monitor --log xsim.log
 - 时序约束自动生成: 解析 Vivado timing report → 自动输出 SDC/XDC (multicycle/async/false_path/max_delay)
 - 波形裁剪集成: 协议感知的信号选择, 自动在 TB 中检测 AXI 信号名
 
+## 文档
+
+```bash
+docs/guide.md           # 使用指南：多规模工程适配、最佳实践、常见踩坑点
+docs/architecture.md    # 架构说明
+```
+
 ## 测试
 
 ```bash
