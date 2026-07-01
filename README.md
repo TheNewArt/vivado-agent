@@ -112,7 +112,13 @@ python -m src.main monitor --log xsim.log
 ### v0.5 毫秒级语法校验 (2026-07-01)
 - Verilator `--lint-only` 后端: 毫秒级语法 + Lint 检查, 过滤 80% 低级错误
 - 双后端自动降级: Verilator (ms) → Vivado xvlog (s), 无 Verilator 也可用
+- Windows WSL 支持: 自动检测 `wsl verilator`, Windows 也可用毫秒级 lint
 - 自动修复成功率提升: 补丁先过 lint 再应用, 避免无效循环
+
+### v0.6 多协议信号分析 & 时序自动约束 (2026-07-01)
+- 协议分析: AXI4 读写通道握手 / PCIe TLP 事务 / UDP 包边界 / SPI/I2C 总线, 从 VCD 波形中自动检测
+- 时序约束自动生成: 解析 Vivado timing report → 自动输出 SDC/XDC (multicycle/async/false_path/max_delay)
+- 波形裁剪集成: 协议感知的信号选择, 自动在 TB 中检测 AXI 信号名
 
 ## 测试
 
