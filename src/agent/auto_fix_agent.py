@@ -111,7 +111,7 @@ class AutoFixAgent:
             return False
 
         # Apply
-        rtl_path.write_text(new_code)
+        rtl_path.write_text(new_code, encoding="utf-8")
         Path(tmp_path).unlink(missing_ok=True)
         logger.info(f"Patch applied to {rtl_path} (syntax check passed)")
         return True
@@ -121,7 +121,7 @@ class AutoFixAgent:
         # Strategy 1: diff
         m = re.search(r'```diff\n(.*?)```', fix_text, re.DOTALL)
         if m:
-            result = self._apply_diff_to_text(original_path.read_text(encoding="utf-8"), m.group(1))
+            result = self._apply_diff_to_text(original_path.read_text(encoding="utf-8", errors="replace"), m.group(1))
             if result:
                 return result
 
