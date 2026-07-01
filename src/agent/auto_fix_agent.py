@@ -32,7 +32,11 @@ class AutoFixAgent:
         strategy = self._choose_strategy(error_context)
         prompt = self._build_prompt(str(rtl_path), rtl_code, error_context, snapshot_data, spec, strategy)
         system = "You are an expert Verilog/SystemVerilog RTL debug engineer. Output ONLY the fix."
-        return self.client.generate(prompt, system=system)
+        result = self.client.generate(prompt, system=system)
+        # If API call failed, return the error message for the orchestrator to handle
+        if result.startswith("# LLM"):
+            logger.warning(f"LLM API call failed: {result[:100]}")
+        return result
 
     # ── Strategy selection ──
     def _choose_strategy(self, error_context: str) -> str:

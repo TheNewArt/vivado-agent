@@ -177,6 +177,17 @@ def _debug(config: Config, args):
         logger.error("--log and --wdb required")
         return
 
+    # Auto-detect RTL dir from project if not specified
+    rtl_dir = args.rtl_dir or config.get("project.rtl_dir", "./src/hdl")
+    if not Path(rtl_dir).exists():
+        # Try to detect from project directory
+        project_dir = args.project_dir or Path.cwd()
+        from src.tools.project_detector import ProjectDetector
+        pf = ProjectDetector().detect(project_dir)
+        if pf.rtl_files:
+            rtl_dir = str(Path(pf.rtl_files[0]).parent)
+            config.data.setdefault("project", {})["rtl_dir"] = rtl_dir
+
     orchestrator = DebugOrchestrator(config)
     result = orchestrator.run_debug_cycle(args.log, args.wdb, args.top or "top", args.clock)
 

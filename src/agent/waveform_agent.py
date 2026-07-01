@@ -65,5 +65,54 @@ class WaveformAnalysisAgent:
 
     def run_extraction(self, wdb_path: str | Path, top_module: str,
                        error_time_ns: float) -> dict:
-        """Legacy compat: same as analyze_fault."""
-        return self.analyze_fault(wdb_path, top_module, error_time_ns)
+        """Extract signal values from WDB using xsim --tclbatch (Vivado 2020.2 compatible).
+
+        Returns structured data with snapshots, X/Z signals, and fault chain.
+        """
+        wdb_path = Path(wdb_path)
+        if not wdb_path.exists():
+            return {"error": f"WDB not found: {wdb_path}"}
+
+        # Probe for actual signal names by listing xsim objects
+        from src.tools.wdb_reader import WDBReader
+        probe_signals = ["/*"]
+        probe = self.reader.extract_signal_values(wdb_path, probe_signals, error_time_ns)
+
+        # If probe succeeded, use the discovered signals
+        if probe:
+            discovered_signals = [s.name for s in probe]
+        else:
+            # Fallback: try common naming patterns
+            tb_name = f"tb_{top_module}"
+            alt_tb = f"TB_{top_module}"
+            discovered_signals = []
+            # Try multiple possible TB names and signal patterns
+            for tb in [tb_name, alt_tb, "tb"]:
+                for base in [f"/{tb}/u_dut", f"/{tb}"]:
+                    for sig in ["clk", "rst_n", "count", "loop_sig", "multi_drive"]:
+                        discovered_signals.append(f"{base}/{sig}")
+
+        snapshots = self.reader.extract_signal_values(wdb_path, discovered_signals, error_time_ns)
+        xz_signals = {s.name for s in snapshots if 'x' in s.value.lower() or 'z' in s.value.lower()}
+
+        # Build fault chain from X/Z signals
+        fault_chain = []
+        for s in snapshots:
+            if s.name in xz_signals:
+                fault_chain.append({
+                    "signal": s.name,
+                    "time_ns": s.time_ns,
+                    "value": s.value,
+                    "type": "x_propagation",
+                })
+
+        return {
+            "wdb_path": str(wdb_path),
+            "error_time_ns": error_time_ns,
+            "snapshots": [{"name": s.name, "value": s.value, "time_ns": s.time_ns}
+                          for s in snapshots],
+            "xz_signals": list(xz_signals),
+            "fault_chain": fault_chain,
+            "total_signals": len(snapshots),
+            "text_report": f"X/Z signals: {len(xz_signals)}, snapshots: {len(snapshots)}",
+        }

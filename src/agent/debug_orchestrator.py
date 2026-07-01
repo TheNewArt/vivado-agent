@@ -38,6 +38,7 @@ class DebugOrchestrator:
         self.config = config
         self.log_agent = LogParserAgent(config.get("project.rtl_dir"))
         self.wave_agent = WaveformAnalysisAgent(config.vivado_path)
+        self.vivado_path = config.vivado_path
         self.fix_agent = AutoFixAgent(config.build_llm_config())
         self.engine = TCLEngine(config.vivado_path)
 
@@ -72,16 +73,43 @@ class DebugOrchestrator:
             logger.info(f"=== Debug iteration {iteration + 1}/{max_iterations} ===")
             iter_data = {"iteration": iteration + 1, "decisions": []}
 
-            # 1) Parse log
+            # 1) Parse log + waveform for errors
             log_analysis = self.log_agent.analyze(log_path)
-            errors = log_analysis.get("errors", [])
+            log_errors = log_analysis.get("errors", [])
+
+            # 1b) Also check WDB for X/Z propagation (functional bugs)
+            wave_errors = []
+            if wdb_path.exists():
+                try:
+                    wave_res = self.wave_agent.run_extraction(
+                        wdb_path, top_module, error_time_ns=0
+                    )
+                    xz_signals = wave_res.get("xz_signals", [])
+                    if xz_signals:
+                        wave_errors.append({
+                            "category": "x_propagation",
+                            "severity": "error",
+                            "message": f"X/Z propagation on {len(xz_signals)} signals: {', '.join(list(xz_signals)[:5])}",
+                            "line_no": 0,
+                            "source_file": "",
+                            "timestamp_ns": 0,
+                        })
+                    iter_data["waveform_xz"] = xz_signals
+                except Exception as e:
+                    logger.warning(f"Waveform analysis failed: {e}")
+
+            errors = log_errors + wave_errors
             iter_data["log_analysis"] = log_analysis
+            iter_data["wave_errors"] = wave_errors
+            iter_data["total_errors"] = len(errors)
 
             # ── Decision: are we done? ──
-            if not log_analysis.get("has_errors", False):
+            if not errors:
                 result["fixed"] = True
-                logger.info("No errors — debug complete")
+                logger.info("No errors (log+waveform) — debug complete")
                 break
+
+            logger.info(f"Found {len(log_errors)} log errors + {len(wave_errors)} waveform errors")
 
             # 2) Classify and prioritize errors
             classified = self._classify_errors(errors)
@@ -126,40 +154,63 @@ class DebugOrchestrator:
             rtl_path = self._find_source_file(target_error, rtl_dir)
 
             # 6) Ask LLM for fix
-            if rtl_path and error_context:
-                fix = self.fix_agent.propose_fix(
-                    rtl_path=rtl_path,
-                    error_context=error_context,
-                    snapshot_data=snapshot_data,
-                    spec="",
-                )
-                iter_data["proposed_fix"] = fix
-                result["fixes_applied"] += 1
+            if error_context:
+                if not rtl_path:
+                    rtl_path = self._find_source_file(target_error, rtl_dir)
+                if not rtl_path and rtl_dir.exists():
+                    # Pick first RTL file as best guess
+                    files = list(rtl_dir.rglob("*.v")) + list(rtl_dir.rglob("*.sv"))
+                    if files:
+                        rtl_path = files[0]
 
-                # 7) Apply and re-run
-                if apply_fixes and self.fix_agent.has_valid_diff(fix):
-                    applied = self.fix_agent.apply_patch(rtl_path, fix)
-                    iter_data["patch_applied"] = applied
-                    iter_data["decisions"].append(
-                        f"patch applied: {applied}" +
-                        (" (syntax check passed)" if applied else " (syntax check failed)")
+                if rtl_path and rtl_path.exists():
+                    fix = self.fix_agent.propose_fix(
+                        rtl_path=rtl_path,
+                        error_context=error_context,
+                        snapshot_data=snapshot_data,
+                        spec="",
                     )
+                    iter_data["proposed_fix"] = fix
+                    result["fixes_applied"] += 1
 
-                    if applied:
-                        sim_result = self._rerun_simulation()
-                        iter_data["rerun_result"] = sim_result
-                        new_errors = self._count_sim_errors(sim_result)
+                    # Detect API failure and abort
+                    if fix.startswith("# LLM"):
+                        iter_data["decisions"].append("LLM API failed — aborting debug cycle")
+                        result["aborted"] = True
+                        result["abort_reason"] = fix[:100]
+                        break
 
-                        # ── Decision: did the fix help? ──
-                        old_count = len(errors)
-                        if new_errors < old_count:
-                            iter_data["decisions"].append(f"FIX HELD: errors {old_count} -> {new_errors}")
-                        elif new_errors == old_count:
-                            iter_data["decisions"].append(f"NEUTRAL: still {new_errors} errors")
-                        else:
-                            iter_data["decisions"].append(f"REGRESSED: errors {old_count} -> {new_errors}")
+                    # 7) Apply and re-run
+                    if apply_fixes and self.fix_agent.has_valid_diff(fix):
+                        applied = self.fix_agent.apply_patch(rtl_path, fix)
+                        iter_data["patch_applied"] = applied
+                        iter_data["decisions"].append(
+                            f"patch applied: {applied}" +
+                            (" (syntax check passed)" if applied else " (syntax check failed)")
+                        )
+
+                        if applied:
+                            sim_result = self._rerun_simulation()
+                            iter_data["rerun_result"] = sim_result
+                            new_errors = self._count_sim_errors(sim_result)
+
+                            # ── Decision: did the fix help? ──
+                            old_count = len(errors)
+                            if new_errors < old_count:
+                                iter_data["decisions"].append(f"FIX HELD: errors {old_count} -> {new_errors}")
+                            elif new_errors == old_count:
+                                iter_data["decisions"].append(f"NEUTRAL: still {new_errors} errors")
+                            else:
+                                iter_data["decisions"].append(f"REGRESSED: errors {old_count} -> {new_errors}")
+                else:
+                    iter_data["decisions"].append("no RTL file found for error — cannot fix")
+                    # If we can't fix, terminate to avoid infinite loop
+                    if iteration >= 1:
+                        result["aborted"] = True
+                        result["abort_reason"] = "Cannot find RTL source file to fix"
+                        break
             else:
-                iter_data["decisions"].append("no RTL file found for error — skipping")
+                iter_data["decisions"].append("no error context — skipping")
 
             self._error_history.append(classified)
             result["iterations"].append(iter_data)
@@ -200,8 +251,11 @@ class DebugOrchestrator:
 
     @staticmethod
     def _extract_timestamps(log_analysis: dict, target_error: dict) -> list[float]:
-        ts = target_error.get("timestamp_ns", 0) if isinstance(target_error, dict) else 0
-        return [ts] if ts > 0 else [0.0]
+        if isinstance(target_error, dict):
+            ts = target_error.get("timestamp_ns", 0)
+            if ts > 0:
+                return [ts]
+        return [0.0]
 
     @staticmethod
     def _build_error_context(log_analysis: dict, target_error: dict) -> str:
@@ -223,6 +277,11 @@ class DebugOrchestrator:
         sf = target_error.get("source_file") if isinstance(target_error, dict) else None
         if sf:
             return Path(sf)
+        # Fallback: search for the RTL file in the rtl_dir
+        if rtl_dir and rtl_dir.exists():
+            for ext in ("*.v", "*.sv"):
+                for f in rtl_dir.rglob(ext):
+                    return f  # return the first RTL file found
         return None
 
     @staticmethod

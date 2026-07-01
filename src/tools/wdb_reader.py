@@ -108,34 +108,67 @@ exit
 
     def extract_signal_values(self, wdb_path: str | Path, signals: list[str],
                               time_ns: float) -> list[SignalSnapshot]:
-        """Extract signal values at a specific timestamp using TCL."""
+        """Extract signal values at end of simulation using xsim --tclbatch.
+
+        Vivado 2020.2 batch mode does not support seek_wave/read_wave_value.
+        Instead, we use xsim.exe directly with a TCL script that reads values
+        via get_value after running the simulation.
+
+        If signals is ['*'] or ['/*'], auto-discovers all signals via get_objects.
+        """
         wdb = Path(wdb_path).resolve()
-        sig_list = "\n".join(f"  lappend sig_list {{{s}}}" for s in signals)
+        snap_name = wdb.stem
 
-        tcl = f"""
-open_wave_database {{{wdb}}}
-open_wave_config [current_wave_config]
+        auto_discover = len(signals) == 1 and signals[0] in ("*", "/*")
 
-set sig_list [list]
-{sig_list}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".tcl",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("log_wave -r /\n")
+            if auto_discover:
+                f.write("run 1ns\n")
+                f.write('set f [open "sigs.csv" w]\n')
+                f.write('puts $f "time,signal,value"\n')
+                f.write('set sigs [get_objects -r /*]\n')
+                f.write('foreach s $sigs {\n')
+                f.write('    set name [get_property NAME $s]\n')
+                f.write('    set val [get_value $s]\n')
+                f.write('    puts $f "0,$name,$val"\n')
+                f.write('}\n')
+            else:
+                f.write(f"run {max(1, time_ns)}ns\n")
+                f.write('set f [open "sigs.csv" w]\n')
+                f.write('puts $f "time,signal,value"\n')
+                for sig in signals:
+                    f.write(f'if {{![catch {{set val [get_value {{{sig}}}]}}]}} {{\n')
+                    f.write(f'    puts $f "{time_ns},{sig},$val"\n')
+                    f.write('}\n')
+            f.write("close $f\n")
+            f.write("puts \"===EXTRACT_DONE===\"\n")
+            tcl_path = f.name
 
-set result ""
-foreach sig_name $sig_list {{
-    set wave_obj [get_wave_objects -filter {{NAME == $sig_name}}]
-    if {{[llength $wave_obj] > 0}} {{
-        seek_wave {time_ns}ns
-        set val [read_wave_value [lindex $wave_obj 0]]
-        set width [get_property WIDTH [lindex $wave_obj 0]]
-        append result "$sig_name,$width,$val\n"
-    }}
-}}
-puts "===EXTRACT_START==="
-puts $result
-puts "===EXTRACT_END==="
-exit
-"""
-        result = self._run_tcl(tcl)
-        return self._parse_extract(result.get("stdout", ""))
+        try:
+            xsim = self.vivado_path.replace("vivado.bat", "xsim.bat")
+            if not Path(xsim).exists():
+                xsim = str(Path(self.vivado_path).parent / "xsim.bat")
+            # Use forward slashes for TCL path
+            tcl_path_tcl = tcl_path.replace("\\", "/")
+            proc = subprocess.run(
+                [xsim, snap_name, "--tclbatch", tcl_path_tcl],
+                capture_output=True, text=True, timeout=120,
+                cwd=str(wdb.parent),
+            )
+            csv_path = wdb.parent / "sigs.csv"
+            if csv_path.exists():
+                result = self._parse_csv_snapshot(csv_path)
+                csv_path.unlink()
+                return result
+            logger.warning(f"xsim OK but no CSV: {proc.stdout[-200:]}")
+            return []
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.warning(f"xsim extraction failed: {e}")
+            return []
+        finally:
+            Path(tcl_path).unlink(missing_ok=True)
 
     def analyze_around_error(self, wdb_path: str | Path, top_module: str,
                               error_time_ns: float, clock_period_ns: float = 10.0,
@@ -188,6 +221,29 @@ exit
                         ))
                     except (ValueError, IndexError):
                         pass
+        return snapshots
+
+    @staticmethod
+    def _parse_csv_snapshot(csv_path: Path) -> list[SignalSnapshot]:
+        """Parse CSV file produced by xsim --tclbatch get_value."""
+        snapshots = []
+        try:
+            import csv
+            with open(csv_path, newline="") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 3 and row[0] != "time":
+                        try:
+                            snapshots.append(SignalSnapshot(
+                                name=row[1].strip(),
+                                width=0,
+                                value=row[2].strip(),
+                                time_ns=float(row[0].strip()),
+                            ))
+                        except (ValueError, IndexError):
+                            pass
+        except Exception as e:
+            logger.warning(f"CSV parse error: {e}")
         return snapshots
 
     @staticmethod
