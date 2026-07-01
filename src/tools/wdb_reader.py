@@ -106,6 +106,69 @@ exit
 """
         return self._run_tcl(tcl)
 
+    def probe_signals(self, wdb_path: str | Path, max_depth: int = 2) -> list[str]:
+        """Probe xsim signal hierarchy up to max_depth levels.
+
+        Returns list of signal paths like /tb_buggy/u_dut/count.
+        Runs in <5s for typical designs.
+        """
+        wdb = Path(wdb_path).resolve()
+        snap_name = wdb.stem
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".tcl",
+                                         delete=False, encoding="utf-8") as f:
+            f.write("log_wave -r /\n")
+            f.write("run 1ns\n")
+            f.write('set f [open "sigs.csv" w]\n')
+            f.write('puts $f "name"\n')
+            # Get top-level objects
+            f.write('set top [get_objects -r /*]\n')
+            f.write('foreach t $top {\n')
+            f.write('    puts $f [get_property NAME $t]\n')
+            if max_depth >= 2:
+                f.write('    set l2 [get_objects -r [get_property NAME $t]/*]\n')
+                f.write('    foreach s2 $l2 {\n')
+                f.write('        puts $f [get_property NAME $s2]\n')
+                if max_depth >= 3:
+                    f.write('        set l3 [get_objects -r [get_property NAME $s2]/*]\n')
+                    f.write('        foreach s3 $l3 {\n')
+                    f.write('            puts $f [get_property NAME $s3]\n')
+                    f.write('        }\n')
+                f.write('    }\n')
+            f.write('}\n')
+            f.write('close $f\n')
+            f.write('puts "===DONE==="\n')
+            tcl_path = f.name
+
+        try:
+            xsim = self._find_xsim()
+            proc = subprocess.run(
+                [xsim, snap_name, "--tclbatch", tcl_path.replace("\\", "/")],
+                capture_output=True, text=True, timeout=30,
+                cwd=str(wdb.parent), errors="replace",
+            )
+            csv_path = wdb.parent / "sigs.csv"
+            signals = []
+            if csv_path.exists():
+                with open(csv_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and line != "name":
+                            signals.append(line)
+                csv_path.unlink()
+            return signals
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.warning(f"Signal probe failed: {e}")
+            return []
+        finally:
+            Path(tcl_path).unlink(missing_ok=True)
+
+    def _find_xsim(self) -> str:
+        xsim = self.vivado_path.replace("vivado.bat", "xsim.bat")
+        if not Path(xsim).exists():
+            xsim = str(Path(self.vivado_path).parent / "xsim.bat")
+        return xsim
+
     def extract_signal_values(self, wdb_path: str | Path, signals: list[str],
                               time_ns: float) -> list[SignalSnapshot]:
         """Extract signal values at end of simulation using xsim --tclbatch.
@@ -134,15 +197,13 @@ exit
             tcl_path = f.name
 
         try:
-            xsim = self.vivado_path.replace("vivado.bat", "xsim.bat")
-            if not Path(xsim).exists():
-                xsim = str(Path(self.vivado_path).parent / "xsim.bat")
+            xsim = self._find_xsim()
             # Use forward slashes for TCL path
             tcl_path_tcl = tcl_path.replace("\\", "/")
             proc = subprocess.run(
                 [xsim, snap_name, "--tclbatch", tcl_path_tcl],
                 capture_output=True, text=True, timeout=120,
-                cwd=str(wdb.parent),
+                cwd=str(wdb.parent), errors="replace",
             )
             csv_path = wdb.parent / "sigs.csv"
             if csv_path.exists():

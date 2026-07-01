@@ -67,26 +67,30 @@ class WaveformAnalysisAgent:
                        error_time_ns: float) -> dict:
         """Extract signal values from WDB using xsim --tclbatch (Vivado 2020.2 compatible).
 
+        First probes the signal hierarchy, then extracts values from discovered signals.
         Returns structured data with snapshots, X/Z signals, and fault chain.
         """
         wdb_path = Path(wdb_path)
         if not wdb_path.exists():
             return {"error": f"WDB not found: {wdb_path}"}
 
-        # Direct signal path probing: try common patterns
-        tb_name = f"tb_{top_module}"
-        signals_to_try = []
-        for tb in [tb_name, f"TB_{top_module}", "tb"]:
-            for base in [f"/{tb}/u_dut", f"/{tb}"]:
-                for sig in ["clk", "rst_n", "count", "loop_sig", "multi_drive"]:
-                    signals_to_try.append(f"{base}/{sig}")
+        # Probe signal hierarchy first (fast, depth=2, <5s)
+        discovered = self.reader.probe_signals(wdb_path, max_depth=2)
+        logger.info(f"Probed {len(discovered)} signals from WDB")
 
-        # Add module-level ports too
-        for tb in [tb_name, f"TB_{top_module}", "tb"]:
-            for sig in ["clk", "rst_n", "count"]:
-                signals_to_try.append(f"/{tb}/{sig}")
+        # Filter to relevant signals (registers, ports, wires)
+        signals_to_read = [s for s in discovered if
+                           not any(excl in s for excl in ["$std", "$unit", "glbl"])]
 
-        snapshots = self.reader.extract_signal_values(wdb_path, signals_to_try, error_time_ns)
+        if not signals_to_read:
+            # Fallback: try common patterns around top_module
+            tb_name = f"tb_{top_module}"
+            for tb in [tb_name, f"TB_{top_module}", "tb"]:
+                for base in [f"/{tb}/u_dut", f"/{tb}"]:
+                    for sig in ["clk", "rst_n", "count", "loop_sig", "multi_drive"]:
+                        signals_to_read.append(f"{base}/{sig}")
+
+        snapshots = self.reader.extract_signal_values(wdb_path, signals_to_read, error_time_ns)
         xz_signals = {s.name for s in snapshots if 'x' in s.value.lower() or 'z' in s.value.lower()}
 
         # Build fault chain from X/Z signals

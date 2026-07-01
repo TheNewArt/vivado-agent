@@ -96,7 +96,7 @@ class SynthChecker:
             proc = subprocess.run(
                 full_cmd, capture_output=True, text=True, timeout=30,
             )
-            output = proc.stdout + proc.stderr
+            output = (proc.stdout or "") + (proc.stderr or "")
             errors, warnings = [], []
 
             for line in output.splitlines():
@@ -158,7 +158,7 @@ close_project -quiet
                 [self.vivado_path, "-mode", "batch", "-source", tcl_path, "-nojournal"],
                 capture_output=True, text=True, timeout=600,
             )
-            output = proc.stdout + proc.stderr
+            output = (proc.stdout or "") + (proc.stderr or "")
             result = self._parse_output(output)
             result.checker = "vivado"
 
@@ -211,7 +211,7 @@ close_project -quiet
             proc = subprocess.run(
                 cmd, input=stdin, capture_output=True, text=True, timeout=60,
             )
-            output = proc.stdout + proc.stderr
+            output = (proc.stdout or "") + (proc.stderr or "")
             has_error = "ERROR:" in output
             errors = []
             for line in output.splitlines():

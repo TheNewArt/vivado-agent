@@ -20,10 +20,10 @@ optimization:
   log_level: "info"
 
 llm:
-  enabled: false
+  enabled: true
   provider: "openai-compatible"
-  model: "gpt-4o"
-  base_url: "https://api.openai.com/v1"
+  model: "moonshot/kimi-k2.6"
+  base_url: "https://aiapi.ihep.ac.cn/apiv2"
   # API key from env: LLM_API_KEY
   temperature: 0.1
   max_tokens: 4096
