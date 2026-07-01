@@ -65,11 +65,16 @@ class AutoFixAgent:
             return False
         if "```diff" in fix_text or "---" in fix_text:
             return True
+        if "```" in fix_text:  # any code block
+            return True
         try:
             json.loads(fix_text)
             return True
         except json.JSONDecodeError:
             pass
+        # Check if it looks like raw Verilog code
+        if any(kw in fix_text for kw in ["module ", "endmodule", "assign "]):
+            return True
         return False
 
     def syntax_check(self, rtl_path: Path) -> dict:
@@ -119,9 +124,12 @@ class AutoFixAgent:
     def _extract_fixed_code(self, fix_text: str, original_path: Path) -> str | None:
         """Extract fixed code from LLM output using multiple strategies."""
         # Strategy 1: diff
-        m = re.search(r'```diff\n(.*?)```', fix_text, re.DOTALL)
+        m = re.search(r'```diff\s*\n(.*?)```', fix_text, re.DOTALL)
         if m:
-            result = self._apply_diff_to_text(original_path.read_text(encoding="utf-8", errors="replace"), m.group(1))
+            result = self._apply_diff_to_text(
+                original_path.read_text(encoding="utf-8", errors="replace"),
+                m.group(1),
+            )
             if result:
                 return result
 
@@ -133,12 +141,25 @@ class AutoFixAgent:
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # Strategy 3: code block
+        # Strategy 3: code block (any language marker)
         for lang in ("verilog", "systemverilog", "sv", "v", ""):
-            pattern = rf'```{lang}\n(.*?)```' if lang else r'```\n(.*?)```'
-            m = re.search(pattern, fix_text, re.DOTALL)
-            if m:
-                return m.group(1).strip()
+            for sep in ("\n", "\r\n", " "):
+                pattern = rf'```{lang}{sep}(.*?)```'
+                m = re.search(pattern, fix_text, re.DOTALL)
+                if m:
+                    return m.group(1).strip()
+
+        # Strategy 4: remove explanatory text, treat whole response as code
+        # Remove common LLM preamble/follow-up text
+        cleaned = fix_text.strip()
+        # Remove lines that look like explanations (start with #, // without code context)
+        lines = cleaned.splitlines()
+        code_lines = [l for l in lines if not l.startswith("Here") and not l.startswith("The") and not l.startswith("This")]
+        if code_lines:
+            # Check if it looks like verilog (has module/endmodule/assign/always)
+            joined = "\n".join(code_lines)
+            if any(kw in joined for kw in ["module ", "endmodule", "assign ", "always "]):
+                return joined
 
         return None
 
