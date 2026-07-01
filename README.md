@@ -120,6 +120,15 @@ python -m src.main monitor --log xsim.log
 - 时序约束自动生成: 解析 Vivado timing report → 自动输出 SDC/XDC (multicycle/async/false_path/max_delay)
 - 波形裁剪集成: 协议感知的信号选择, 自动在 TB 中检测 AXI 信号名
 
+### v0.7 企业级完备性加固 (2026-07-01)
+- BugDatabase: 120+ 错误/警告模式, 14 大分类 (Synth/Impl/Timing/XSim/UVM/DRC/TCL/PetaLinux/HLS/AIE)
+- TCL 会话管理: 持久会话 + 心跳监控 + 超时自动重启 + 内存泄漏检测
+- 后综合时序仿真: synth → netlist + SDF → gate-level timing sim → 对比 RTL 结果
+- 文档: docs/guide.md 多规模工程教程、最佳实践、常见踩坑点
+- 器件/版本检测: 从 .xpr 自动识别 7series/UltraScale/Versal/AIE
+- PetaLinux/Vitis HLS 集成检测: 自动识别 petalinux 项目、HLS 脚本、C/C++ HLS 源码
+- Verilator WSL 支持: Windows 下自动降级到 wsl verilator, 保持毫秒级 lint
+
 ## 文档
 
 ```bash
