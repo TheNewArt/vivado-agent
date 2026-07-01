@@ -119,7 +119,11 @@ def _run_pipeline(config: Config, args):
     script = agent.generate_simulation_script(plan)
     _print_plan(plan, script)
 
-    # 4) Execute
+    # 4) Wrap with project open (use forward slashes for Vivado TCL)
+    xpr_files = list(Path(project_dir).rglob("*.xpr"))
+    if xpr_files:
+        xpr_path = str(xpr_files[0].resolve()).replace("\\", "/")
+        script = f"open_project {{{xpr_path}}}\n{script}"
     result = engine.run_script(script)
     elapsed = result.get("elapsed", 0)
 

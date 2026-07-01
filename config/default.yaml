@@ -1,5 +1,6 @@
 vivado:
-  path: "vivado"
+  path: "D:\\001software\\Vivado\\2020.2\\bin\\vivado.bat"
+  version: "2020.2"
   mode: "batch"
   tcl_timeout: 3600
 
