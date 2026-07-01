@@ -1,0 +1,28 @@
+vivado:
+  path: "vivado"
+  mode: "batch"
+  tcl_timeout: 3600
+
+project:
+  name: ""
+  rtl_dir: "./src/hdl"
+  tb_dir: "./src/tb"
+  output_dir: "./output"
+  sim_cache_dir: "./xsim_cache"
+
+optimization:
+  incremental_compile: true
+  multithreaded: true
+  max_threads: 0  # 0 = auto-detect
+  waveform_crop: true
+  terminate_on_deadlock: true
+  log_level: "info"
+
+llm:
+  enabled: false
+  provider: "openai-compatible"
+  model: "gpt-4o"
+  base_url: "https://api.openai.com/v1"
+  # API key from env: LLM_API_KEY
+  temperature: 0.1
+  max_tokens: 4096

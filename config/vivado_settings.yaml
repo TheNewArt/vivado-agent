@@ -1,0 +1,23 @@
+simulation:
+  enableIncrementalCompilation: true
+  cache_path: "./xsim_cache"
+  multithreaded: true
+  log_all_signals: false
+  waveform_storage: "compact"
+  xsim_optimization_level: "-O3"
+
+synthesis:
+  flatten_hierarchy: "rebuilt"
+  gated_clock_conversion: "off"
+  fanout_limit: 1000
+  fsb_extraction: "off"
+  keep_equivalent_registers: true
+  resource_sharing: "off"
+  control_set_opt_threshold: "auto"
+  no_lc: true
+
+implementation:
+  power: false
+  place_opt_flow: "Explore"
+  route_opt: true
+  physical_cells: false

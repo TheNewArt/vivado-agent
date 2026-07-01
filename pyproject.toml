@@ -1,0 +1,22 @@
+[project]
+name = "vivado-agent"
+version = "0.1.0"
+description = "AI-driven Vivado FPGA development agent — simulation acceleration & auto-debug"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "watchdog>=3.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+vivado-agent = "src.main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
