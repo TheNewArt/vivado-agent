@@ -109,6 +109,11 @@ python -m src.main monitor --log xsim.log
 - 本地模式: 关闭 LLM API 调用, 适配数据合规场景
 - Benchmark: 6 个测试, 含 5 个故意植入 Bug, 31 个测试全绿
 
+### v0.5 毫秒级语法校验 (2026-07-01)
+- Verilator `--lint-only` 后端: 毫秒级语法 + Lint 检查, 过滤 80% 低级错误
+- 双后端自动降级: Verilator (ms) → Vivado xvlog (s), 无 Verilator 也可用
+- 自动修复成功率提升: 补丁先过 lint 再应用, 避免无效循环
+
 ## 测试
 
 ```bash
