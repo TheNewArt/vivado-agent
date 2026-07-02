@@ -129,6 +129,15 @@ python -m src.main monitor --log xsim.log
 - PetaLinux/Vitis HLS 集成检测: 自动识别 petalinux 项目、HLS 脚本、C/C++ HLS 源码
 - Verilator WSL 支持: Windows 下自动降级到 wsl verilator, 保持毫秒级 lint
 
+### v0.8 Debug 闭环验证 (2026-07-02)
+- DebugOrchestrator 完整闭环: 错误检测 → 波形分析 → LLM 修复 → 语法校验 → 文件覆盖 → 重验证
+- xsim 信号提取: 通过 xsim --tclbatch 直接读取 WDB 信号值 (绕过 Vivado 闭源格式)
+- 静态扫描自动兜底: xsim 不可用时自动降级到 RTL 静态分析
+- 停滞检测: 3 轮无改善或 LLM 重复输出时自动终止
+- 修复文件优先匹配: 自动选择 buggy 命名的源文件
+- 带行号标注的代码上下文: LLM 获取完整代码+错误标记
+- 真实 Vivado 2020.2 仿真数据验证通过 (Bug 从 5 个降至 1 个, 1 个架构级问题可接受)
+
 ## 文档
 
 ```bash
